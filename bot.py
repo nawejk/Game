@@ -8,7 +8,7 @@ import sqlite3
 BOT_TOKEN = '8447925570:AAG5LsRoHfs3UXTJSgRa2PMjcrR291iDqfo'
 BOT_WALLET = 'CKZEpwiVqAHLiSbdc8Ebf8xaQ2fofgPCNmzi4cV32M1s'
 RPC_URL = 'https://api.mainnet-beta.solana.com'
-ADMIN_ID = 123456789  # Ersetze mit echter Telegram-ID
+ADMIN_ID = 7919108078 # Ersetze mit echter Telegram-ID
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
 
