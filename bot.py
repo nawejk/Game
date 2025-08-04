@@ -5,8 +5,8 @@ import threading
 import requests
 import sqlite3
 
-BOT_TOKEN = 'HIER_DEIN_BOT_TOKEN'
-BOT_WALLET = 'DEINE_SOLANA_WALLET_ADRESSE'
+BOT_TOKEN = '8447925570:AAG5LsRoHfs3UXTJSgRa2PMjcrR291iDqfo'
+BOT_WALLET = 'CKZEpwiVqAHLiSbdc8Ebf8xaQ2fofgPCNmzi4cV32M1s'
 RPC_URL = 'https://api.mainnet-beta.solana.com'
 ADMIN_ID = 123456789  # Ersetze mit echter Telegram-ID
 
