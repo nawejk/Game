@@ -3,6 +3,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import time
 import threading
 import requests
+import sqlite3
 
 BOT_TOKEN = '8447925570:AAG5LsRoHfs3UXTJSgRa2PMjcrR291iDqfo'
 BOT_WALLET = 'CKZEpwiVqAHLiSbdc8Ebf8xaQ2fofgPCNmzi4cV32M1s'
@@ -11,10 +12,112 @@ ADMIN_ID = 7919108078
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
 
-users = {}
-matches = {}
+# SQLite Setup
+conn = sqlite3.connect('bot_database.db', check_same_thread=False)
+cursor = conn.cursor()
+
+# Tabellen erstellen
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    wallet TEXT,
+    balance REAL
+)
+''')
+
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS matches (
+    match_id TEXT PRIMARY KEY,
+    p1 INTEGER,
+    p2 INTEGER,
+    game TEXT,
+    stake REAL,
+    wallet1 TEXT,
+    wallet2 TEXT,
+    paid1 INTEGER,
+    paid2 INTEGER,
+    result1 TEXT,
+    result2 TEXT
+)
+''')
+
+conn.commit()
+
+# DB-Funktionen Users
+def save_user(user_id, username, wallet='', balance=0.0):
+    cursor.execute('''
+    INSERT OR REPLACE INTO users (user_id, username, wallet, balance) VALUES (?, ?, ?, ?)
+    ''', (user_id, username, wallet, balance))
+    conn.commit()
+
+def load_user(user_id):
+    cursor.execute('SELECT user_id, username, wallet, balance FROM users WHERE user_id = ?', (user_id,))
+    return cursor.fetchone()
+
+def update_balance(user_id, amount):
+    cursor.execute('UPDATE users SET balance = ? WHERE user_id = ?', (amount, user_id))
+    conn.commit()
+
+def update_wallet(user_id, wallet):
+    cursor.execute('UPDATE users SET wallet = ? WHERE user_id = ?', (wallet, user_id))
+    conn.commit()
+
+def load_all_users():
+    cursor.execute('SELECT user_id, username, wallet, balance FROM users')
+    return cursor.fetchall()
+
+# DB-Funktionen Matches
+def save_match(match_id, match):
+    cursor.execute('''
+    INSERT OR REPLACE INTO matches (match_id, p1, p2, game, stake, wallet1, wallet2, paid1, paid2, result1, result2)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        match_id,
+        match['p1'],
+        match['p2'],
+        match['game'],
+        match['stake'],
+        match['wallets'].get(match['p1'], ''),
+        match['wallets'].get(match['p2'], ''),
+        int(match['paid'].get(match['p1'], False)),
+        int(match['paid'].get(match['p2'], False)),
+        match['results'].get(match['p1'], ''),
+        match['results'].get(match['p2'], ''),
+    ))
+    conn.commit()
+
+def load_all_matches():
+    cursor.execute('SELECT * FROM matches')
+    rows = cursor.fetchall()
+    matches = {}
+    for row in rows:
+        match_id = row[0]
+        matches[match_id] = {
+            'p1': row[1],
+            'p2': row[2],
+            'game': row[3],
+            'stake': row[4],
+            'wallets': {row[1]: row[5], row[2]: row[6]},
+            'paid': {row[1]: bool(row[7]), row[2]: bool(row[8])},
+            'results': {row[1]: row[9], row[2]: row[10]},
+        }
+    return matches
+
+def delete_match(match_id):
+    cursor.execute('DELETE FROM matches WHERE match_id = ?', (match_id,))
+    conn.commit()
+
+# States werden im RAM gespeichert
 states = {}
-checked_signatures = set()
+
+# Lade Nutzer und Matches beim Start
+users = {}
+for u in load_all_users():
+    users[u[0]] = {'username': u[1], 'wallet': u[2], 'balance': u[3]}
+
+matches = load_all_matches()
+
 games = ['FIFA', 'Fortnite', 'Call of Duty', 'Mario Kart']
 
 def main_menu(user_id):
@@ -22,12 +125,15 @@ def main_menu(user_id):
     markup.add(InlineKeyboardButton("🎮 Match starten", callback_data="start_match"))
     markup.add(InlineKeyboardButton("💰 Guthaben", callback_data="balance"))
     markup.add(InlineKeyboardButton("📤 Auszahlung", callback_data="withdraw"))
-    bot.send_message(user_id, "🏠 Hauptmenü", reply_markup=markup)
+    bot.send_message(user_id, "🏠 Hauptmenü", reply_markup=markup)
 
 @bot.message_handler(commands=['start'])
 def start(msg):
     uid = msg.from_user.id
-    users.setdefault(uid, {'username': msg.from_user.username or f'user{uid}', 'wallet': '', 'balance': 0.0})
+    username = msg.from_user.username or f'user{uid}'
+    if uid not in users:
+        users[uid] = {'username': username, 'wallet': '', 'balance': 0.0}
+        save_user(uid, username)
     main_menu(uid)
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -39,7 +145,7 @@ def menu_handler(call):
         markup = InlineKeyboardMarkup()
         for game in games:
             markup.add(InlineKeyboardButton(game, callback_data=f"game_{game}"))
-        bot.edit_message_text("🎮 Wähle ein Spiel:", uid, call.message.message_id, reply_markup=markup)
+        bot.edit_message_text("🎮 Wähle ein Spiel:", uid, call.message.message_id, reply_markup=markup)
 
     elif data.startswith("game_"):
         game = data[5:]
@@ -52,7 +158,7 @@ def menu_handler(call):
         bot.send_message(uid, f"💼 Dein Guthaben: <b>{bal:.4f} SOL</b>", parse_mode="HTML")
 
     elif data == "withdraw":
-        bot.send_message(uid, "💸 Wie viel möchtest du auszahlen?")
+        bot.send_message(uid, "💸 Wie viel möchtest du auszahlen?")
         states[uid] = {'step': 'withdraw'}
 
 @bot.message_handler(func=lambda m: m.from_user.id in states)
@@ -68,7 +174,7 @@ def state_handler(msg):
                 opponent_id = u_id
                 break
         if not opponent_id:
-            bot.send_message(uid, "❌ Gegner nicht gefunden. Beide müssen zuerst /start eingeben.")
+            bot.send_message(uid, "❌ Gegner nicht gefunden. Beide müssen zuerst /start eingeben.")
             states.pop(uid)
             return
         state['opponent_id'] = opponent_id
@@ -82,7 +188,7 @@ def state_handler(msg):
             state['step'] = 'wallet'
             bot.send_message(uid, "🔑 Gib deine Solana-Wallet-Adresse ein (Absender-Adresse):")
         except:
-            bot.send_message(uid, "❌ Ungültiger Betrag. Bitte erneut eingeben.")
+            bot.send_message(uid, "❌ Ungültiger Betrag. Bitte erneut eingeben.")
 
     elif state['step'] == 'wallet':
         wallet = msg.text.strip()
@@ -97,129 +203,8 @@ def state_handler(msg):
             'paid': {p1: False, p2: False},
             'results': {}
         }
+        save_match(match_id, matches[match_id])
         states[p2] = {'step': 'wallet_join', 'match_id': match_id}
         bot.send_message(p2, f"👋 @{users[p1]['username']} hat dich zu einem Match in <b>{game}</b> eingeladen.\n💵 Einsatz: {stake} SOL\n\nBitte sende deine Wallet-Adresse (Absender):", parse_mode="HTML")
         bot.send_message(p1, f"✅ Match erstellt. Bitte sende <b>{stake} SOL</b> an:\n<code>{BOT_WALLET}</code>", parse_mode="HTML")
         states.pop(uid)
-
-    elif state['step'] == 'wallet_join':
-        match_id = state['match_id']
-        matches[match_id]['wallets'][uid] = msg.text.strip()
-        stake = matches[match_id]['stake']
-        bot.send_message(uid, f"✅ Wallet gespeichert. Bitte sende <b>{stake} SOL</b> an:\n<code>{BOT_WALLET}</code>", parse_mode="HTML")
-        states.pop(uid)
-
-    elif state['step'] == 'withdraw':
-        try:
-            amount = float(msg.text.strip())
-            if amount > users[uid]['balance']:
-                bot.send_message(uid, "❌ Du hast nicht genug Guthaben.")
-                return
-            users[uid]['balance'] -= amount
-            bot.send_message(uid, "✅ Deine Auszahlung wird bearbeitet (1–2 Stunden).")
-            bot.send_message(ADMIN_ID, f"📤 @{users[uid]['username']} möchte {amount} SOL auszahlen.")
-            states.pop(uid)
-        except:
-            bot.send_message(uid, "❌ Ungültiger Betrag.")
-
-@bot.message_handler(commands=['ergebnis'])
-def cmd_result(msg):
-    uid = msg.from_user.id
-    match_id = None
-    for mid, m in matches.items():
-        if uid in m['paid'] and all(m['paid'].values()):
-            match_id = mid
-            break
-    if not match_id:
-        bot.send_message(uid, "❌ Kein aktives Match mit vollständiger Zahlung gefunden.")
-        return
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🏆 Gewonnen", callback_data=f"res_win_{match_id}"))
-    markup.add(InlineKeyboardButton("❌ Verloren", callback_data=f"res_lose_{match_id}"))
-    markup.add(InlineKeyboardButton("🤝 Unentschieden", callback_data=f"res_draw_{match_id}"))
-    bot.send_message(uid, "❓ Was ist dein Ergebnis?", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("res_"))
-def result_handler(call):
-    uid = call.from_user.id
-    _, res, match_id = call.data.split("_")
-    match = matches.get(match_id)
-    if not match:
-        bot.send_message(uid, "❌ Match nicht gefunden.")
-        return
-    match['results'][uid] = res
-    bot.send_message(uid, f"✅ Dein Ergebnis wurde gespeichert: {res}")
-    if len(match['results']) == 2:
-        r1 = match['results'][match['p1']]
-        r2 = match['results'][match['p2']]
-        if r1 == r2 == "draw":
-            users[match['p1']]['balance'] += match['stake']
-            users[match['p2']]['balance'] += match['stake']
-            msg = "🤝 Unentschieden! Einsatz zurück."
-        elif r1 == "win" and r2 == "lose":
-            users[match['p1']]['balance'] += match['stake'] * 2
-            msg = f"🏆 @{users[match['p1']]['username']} hat gewonnen!"
-        elif r2 == "win" and r1 == "lose":
-            users[match['p2']]['balance'] += match['stake'] * 2
-            msg = f"🏆 @{users[match['p2']]['username']} hat gewonnen!"
-        else:
-            msg = "⚠️ Streitfall! Admin wird informiert."
-            bot.send_message(ADMIN_ID, f"🚨 Streitfall im Match {match_id} zwischen @{users[match['p1']]['username']} und @{users[match['p2']]['username']}.")
-        bot.send_message(match['p1'], msg)
-        bot.send_message(match['p2'], msg)
-        del matches[match_id]
-
-def check_payments():
-    while True:
-        try:
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getSignaturesForAddress",
-                "params": [BOT_WALLET, {"limit": 25}]
-            }
-            res = requests.post(RPC_URL, json=payload).json()
-            for tx in res.get("result", []):
-                sig = tx['signature']
-                if sig in checked_signatures:
-                    continue
-                checked_signatures.add(sig)
-                tx_data = get_tx_details(sig)
-                if not tx_data:
-                    continue
-                sender, amount = tx_data['from'], tx_data['amount']
-                for m_id, m in matches.items():
-                    for uid, w in m['wallets'].items():
-                        if w == sender and not m['paid'][uid] and amount >= m['stake']:
-                            m['paid'][uid] = True
-                            bot.send_message(uid, f"✅ Zahlung über {amount} SOL erkannt.")
-                            if all(m['paid'].values()):
-                                bot.send_message(m['p1'], "✅ Beide Spieler haben gezahlt. Bitte /ergebnis senden.")
-                                bot.send_message(m['p2'], "✅ Beide Spieler haben gezahlt. Bitte /ergebnis senden.")
-        except Exception as e:
-            print("Fehler beim Prüfen der Zahlung:", e)
-        time.sleep(30)
-
-def get_tx_details(sig):
-    try:
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getTransaction",
-            "params": [sig, {"encoding": "jsonParsed"}]
-        }
-        r = requests.post(RPC_URL, json=payload).json()
-        instr = r['result']['transaction']['message']['instructions']
-        for i in instr:
-            if i.get('program') == 'system':
-                info = i['parsed']['info']
-                lamports = int(info['lamports'])
-                sol = lamports / 1e9
-                return {"from": info['source'], "amount": sol}
-    except:
-        return None
-
-# Start des Hintergrund-Threads
-threading.Thread(target=check_payments, daemon=True).start()
-print("🤖 Bot läuft...")
-bot.infinity_polling()
