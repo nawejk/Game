@@ -7,6 +7,8 @@ import threading
 import requests
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
+import base64
+import json
 
 BOT_TOKEN = '8113317405:AAERiOi3TM95xU87ys9xIV_L622MLo83t6Q'
 BOT_WALLET = 'CKZEpwiVqAHLiSbdc8Ebf8xaQ2fofgPCNmzi4cV32M1s'
@@ -37,7 +39,24 @@ cur.execute('''CREATE TABLE matches (
     wallet2 TEXT,
     paid1 INTEGER,
     paid2 INTEGER,
-    winner INTEGER DEFAULT NULL
+    winner INTEGER DEFAULT NULL,
+    created_at REAL
+)''')
+
+cur.execute('''CREATE TABLE deposits (
+    signature TEXT PRIMARY KEY,
+    user_id INTEGER,
+    amount REAL,
+    timestamp REAL
+)''')
+
+cur.execute('''CREATE TABLE withdrawals (
+    withdrawal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    amount REAL,
+    status TEXT DEFAULT 'pending',
+    timestamp REAL,
+    txid TEXT
 )''')
 db.commit()
 
@@ -48,42 +67,39 @@ checked_signatures = set()
 games = ['FIFA', 'Fortnite', 'Call of Duty', 'Mario Kart']
 
 def create_logo():
-    # Erstelle ein 400x400 Logo mit V, links rot, rechts blau
     size = (400, 400)
-    img = Image.new('RGBA', size, (255,255,255,0))
+    img = Image.new('RGBA', size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-
-    # Farben
-    red = (220, 20, 60)     # Crimson red
-    blue = (30, 144, 255)   # Dodger blue
-
-    # Schriftart (Versuche eine Systemschrift, falls vorhanden)
+    
     try:
         font = ImageFont.truetype("arial.ttf", 300)
     except:
-        font = ImageFont.load_default()
+        try:
+            font = ImageFont.truetype("DejaVuSans.ttf", 300)
+        except:
+            font = ImageFont.load_default()
 
-    # Textgröße (V)
     text = "V"
     w, h = draw.textsize(text, font=font)
-
-    # Position zentriert
     pos = ((size[0]-w)//2, (size[1]-h)//2 - 20)
-
-    # Erstelle Maske für V
+    
+    # Create mask for V
     mask = Image.new('L', size, 0)
     mask_draw = ImageDraw.Draw(mask)
     mask_draw.text(pos, text, font=font, fill=255)
-
-    # Links rot, rechts blau
-    # Teile den Buchstaben in zwei Dreiecke
-    for x in range(size[0]):
-        for y in range(size[1]):
-            if mask.getpixel((x,y)) > 0:
-                if x < size[0]//2:
-                    img.putpixel((x,y), red + (255,))
-                else:
-                    img.putpixel((x,y), blue + (255,))
+    
+    # Create colored parts
+    red_part = Image.new('RGBA', size, (220, 20, 60, 255))
+    blue_part = Image.new('RGBA', size, (30, 144, 255, 255))
+    
+    # Split mask into left and right
+    mask_left = mask.crop((0, 0, size[0]//2, size[1]))
+    mask_right = mask.crop((size[0]//2, 0, size[0], size[1]))
+    
+    # Apply colors
+    img.paste(red_part, (0, 0), mask_left)
+    img.paste(blue_part, (size[0]//2, 0), mask_right)
+    
     return img
 
 def get_username(uid):
@@ -102,7 +118,6 @@ def add_balance(uid, amount):
 
 def main_menu(uid):
     markup = InlineKeyboardMarkup(row_width=2)
-    # Blau = 🔵, Rot = 🔴 für Buttons
     markup.add(
         InlineKeyboardButton("🔵🎮 Match starten", callback_data="start_match"),
         InlineKeyboardButton("🔴💰 Guthaben", callback_data="balance"),
@@ -118,7 +133,6 @@ def start(msg):
     cur.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (uid, uname))
     db.commit()
 
-    # Logo generieren und senden
     img = create_logo()
     bio = BytesIO()
     bio.name = 'versus_arena_logo.png'
@@ -135,9 +149,8 @@ def handle_callback(call):
 
     if data == "start_match":
         markup = InlineKeyboardMarkup()
-        for g in games:
-            # Button mit Farb-Emoji passend (abwechselnd)
-            emoji = "🔵" if games.index(g) % 2 == 0 else "🔴"
+        for idx, g in enumerate(games):
+            emoji = "🔵" if idx % 2 == 0 else "🔴"
             markup.add(InlineKeyboardButton(f"{emoji} {g}", callback_data=f"game_{g}"))
         bot.edit_message_text("<b>🎮 Versus Arena - Spiel auswählen:</b>", uid, call.message.message_id, reply_markup=markup)
 
@@ -151,7 +164,7 @@ def handle_callback(call):
         bot.send_message(uid, f"🔵💰 Dein Guthaben: <b>{bal:.4f} SOL</b>")
 
     elif data == "deposit":
-        bot.send_message(uid, f"🔵📥 Sende SOL an:\n<code>{BOT_WALLET}</code>")
+        bot.send_message(uid, f"🔵📥 Sende SOL an:\n<code>{BOT_WALLET}</code>\n\n<b>WICHTIG:</b> Füge im Memo-Feld deine User-ID hinzu: <code>{uid}</code>")
 
     elif data == "withdraw":
         states[uid] = {'step': 'withdraw'}
@@ -169,7 +182,6 @@ def handle_callback(call):
             bot.send_message(uid, "⚠️ Es wurde bereits ein Sieger gemeldet.")
             return
 
-        # Gewinner setzen und Guthaben auszahlen
         cur.execute("UPDATE matches SET winner=? WHERE match_id=?", (uid, mid))
         add_balance(uid, stake * 2)
         db.commit()
@@ -184,6 +196,17 @@ def handle_callback(call):
         mid = data.split("_")[1]
         bot.send_message(ADMIN_ID, f"🚨 Streitfall Match {mid}: Ein Spieler meldet ein Problem.")
         bot.send_message(uid, "📨 Der Admin wurde informiert. Bitte sende ggf. Beweise.")
+    
+    # Admin commands
+    elif data == "admin_balance":
+        if uid == ADMIN_ID:
+            payload = {"jsonrpc":"2.0","id":1,"method":"getBalance","params":[BOT_WALLET]}
+            try:
+                r = requests.post(RPC_URL, json=payload).json()
+                balance = r['result']['value'] / 1e9
+                bot.send_message(ADMIN_ID, f"💰 Bot Wallet Balance: {balance:.4f} SOL")
+            except:
+                bot.send_message(ADMIN_ID, "❌ Fehler beim Abrufen des Guthabens")
 
 def handle_result_button(uid, mid):
     markup = InlineKeyboardMarkup()
@@ -194,9 +217,10 @@ def handle_result_button(uid, mid):
 def state_handler(msg):
     uid = msg.from_user.id
     state = states[uid]
+    text = msg.text.strip()
 
     if state['step'] == 'opponent':
-        opponent = msg.text.strip().lstrip("@")
+        opponent = text.lstrip("@")
         cur.execute("SELECT user_id FROM users WHERE username=?", (opponent,))
         r = cur.fetchone()
         if not r:
@@ -208,7 +232,7 @@ def state_handler(msg):
 
     elif state['step'] == 'stake':
         try:
-            stake = float(msg.text.replace(",", "."))
+            stake = float(text.replace(",", "."))
             if stake <= 0:
                 raise ValueError()
             state['stake'] = stake
@@ -218,31 +242,30 @@ def state_handler(msg):
             bot.send_message(uid, "❌ Ungültiger Betrag. Bitte Zahl eingeben (z.B. 0.1).")
 
     elif state['step'] == 'wallet1':
-        wallet1 = msg.text.strip()
-        if len(wallet1) < 30:
+        if len(text) < 30:
             bot.send_message(uid, "❌ Ungültige Wallet-Adresse.")
             return
-        state['wallet1'] = wallet1
+        state['wallet1'] = text
         state['step'] = 'wallet2'
         bot.send_message(uid, "💼 Wallet-Adresse des Gegners:")
 
     elif state['step'] == 'wallet2':
-        wallet2 = msg.text.strip()
-        if len(wallet2) < 30:
+        if len(text) < 30:
             bot.send_message(uid, "❌ Ungültige Wallet-Adresse.")
             return
-        state['wallet2'] = wallet2
+        state['wallet2'] = text
 
-        # Match anlegen
+        # Create match
         match_id = str(int(time.time()*1000))
-        cur.execute("INSERT INTO matches (match_id, p1, p2, game, stake, wallet1, wallet2, paid1, paid2) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)",
-                    (match_id, uid, state['opponent'], state['game'], state['stake'], state['wallet1'], state['wallet2']))
+        created_at = time.time()
+        cur.execute("INSERT INTO matches (match_id, p1, p2, game, stake, wallet1, wallet2, paid1, paid2, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?)",
+                    (match_id, uid, state['opponent'], state['game'], state['stake'], state['wallet1'], state['wallet2'], created_at))
         db.commit()
 
         bot.send_message(uid, f"✅ Match erstellt mit {get_username(state['opponent'])} für {state['game']} mit Einsatz {state['stake']} SOL.\nSende jetzt die Zahlung an:\n<code>{state['wallet1']}</code>")
         bot.send_message(state['opponent'], f"📢 @{get_username(uid)} hat ein Match für {state['game']} gestartet mit Einsatz {state['stake']} SOL.\nSende deine Zahlung an:\n<code>{state['wallet2']}</code>")
 
-        # Ergebnis Buttons an beide senden
+        # Send result buttons
         handle_result_button(uid, match_id)
         handle_result_button(state['opponent'], match_id)
 
@@ -250,42 +273,127 @@ def state_handler(msg):
 
     elif state['step'] == 'withdraw':
         try:
-            amount = float(msg.text.replace(",", "."))
+            amount = float(text.replace(",", "."))
             bal = get_balance(uid)
             if amount <= 0 or amount > bal:
                 bot.send_message(uid, f"❌ Ungültiger Betrag. Dein Guthaben: {bal:.4f} SOL")
                 return
-            # Anfrage an Admin senden
-            bot.send_message(ADMIN_ID, f"💸 Auszahlung angefragt von @{get_username(uid)} ({uid}): {amount} SOL")
+            
+            # Create withdrawal request
+            cur.execute("INSERT INTO withdrawals (user_id, amount, timestamp) VALUES (?, ?, ?)",
+                       (uid, amount, time.time()))
+            db.commit()
+            
             bot.send_message(uid, "✅ Auszahlung angefragt. Die Bearbeitung dauert 1-2 Stunden.")
+            bot.send_message(ADMIN_ID, f"💸 Neue Auszahlungsanfrage von @{get_username(uid)}: {amount} SOL")
             del states[uid]
         except:
             bot.send_message(uid, "❌ Ungültiger Betrag.")
 
-# --- Zahlungserkennung (einfaches Polling) ---
+# --- Payment checking ---
 def check_payments():
     while True:
         try:
-            cur.execute("SELECT match_id, wallet1, paid1 FROM matches WHERE paid1=0")
+            # Check match payments
+            cur.execute("SELECT match_id, wallet1, paid1, created_at, stake FROM matches WHERE paid1=0")
             unpaid1 = cur.fetchall()
-            cur.execute("SELECT match_id, wallet2, paid2 FROM matches WHERE paid2=0")
+            cur.execute("SELECT match_id, wallet2, paid2, created_at, stake FROM matches WHERE paid2=0")
             unpaid2 = cur.fetchall()
 
-            for (mid, w, paid) in unpaid1:
-                if check_solana_payment(w):
+            for (mid, w, paid, created_at, stake) in unpaid1:
+                if check_solana_payment(w, created_at, stake):
                     cur.execute("UPDATE matches SET paid1=1 WHERE match_id=?", (mid,))
                     db.commit()
                     p1 = get_match_player(mid, 1)
                     bot.send_message(p1, "✅ Deine Zahlung wurde erkannt.")
 
-            for (mid, w, paid) in unpaid2:
-                if check_solana_payment(w):
+            for (mid, w, paid, created_at, stake) in unpaid2:
+                if check_solana_payment(w, created_at, stake):
                     cur.execute("UPDATE matches SET paid2=1 WHERE match_id=?", (mid,))
                     db.commit()
                     p2 = get_match_player(mid, 2)
                     bot.send_message(p2, "✅ Deine Zahlung wurde erkannt.")
         except Exception as e:
-            print("Error checking payments:", e)
+            print("Error checking match payments:", e)
+        time.sleep(60)
+
+def check_deposits():
+    while True:
+        try:
+            # Get recent transactions
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getSignaturesForAddress",
+                "params": [
+                    BOT_WALLET,
+                    {"limit": 10}
+                ]
+            }
+            response = requests.post(RPC_URL, json=payload).json()
+            signatures = [sig['signature'] for sig in response.get('result', [])]
+            
+            for sig in signatures:
+                if sig in checked_signatures:
+                    continue
+                checked_signatures.add(sig)
+                
+                # Get transaction details
+                tx_payload = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getTransaction",
+                    "params": [sig, "json"]
+                }
+                tx_resp = requests.post(RPC_URL, json=tx_payload).json()
+                tx = tx_resp.get('result', {})
+                
+                # Check if valid transaction
+                if tx.get('meta', {}).get('err'):
+                    continue
+                
+                # Find memo and amount
+                memo = None
+                amount = 0
+                
+                # Check instructions for memo
+                for ix in tx.get('transaction', {}).get('message', {}).get('instructions', []):
+                    if ix.get('program') == 'spl-memo':
+                        try:
+                            memo = base64.b64decode(ix['data']).decode('utf-8')
+                        except:
+                            continue
+                
+                # Check balance changes
+                account_keys = tx['transaction']['message']['accountKeys']
+                try:
+                    wallet_index = account_keys.index(BOT_WALLET)
+                    pre_balance = tx['meta']['preBalances'][wallet_index]
+                    post_balance = tx['meta']['postBalances'][wallet_index]
+                    amount = (post_balance - pre_balance) / 1e9
+                except:
+                    continue
+                
+                if amount <= 0 or not memo:
+                    continue
+                
+                try:
+                    user_id = int(memo)
+                    # Check if deposit already processed
+                    cur.execute("SELECT * FROM deposits WHERE signature=?", (sig,))
+                    if cur.fetchone():
+                        continue
+                    
+                    # Credit user
+                    add_balance(user_id, amount)
+                    cur.execute("INSERT INTO deposits (signature, user_id, amount, timestamp) VALUES (?, ?, ?, ?)",
+                                (sig, user_id, amount, time.time()))
+                    db.commit()
+                    bot.send_message(user_id, f"✅ Einzahlung von {amount:.4f} SOL erkannt. Dein Guthaben wurde aktualisiert.")
+                except:
+                    continue
+        except Exception as e:
+            print("Error checking deposits:", e)
         time.sleep(60)
 
 def get_match_player(match_id, player_num):
@@ -295,8 +403,7 @@ def get_match_player(match_id, player_num):
         return None
     return r[0] if player_num == 1 else r[1]
 
-def check_solana_payment(wallet):
-    # Simplified: Check if wallet balance > 0.001 SOL (Dummy, du musst hier eine echte RPC Abfrage einbauen)
+def check_solana_payment(wallet, created_at, stake):
     try:
         payload = {
             "jsonrpc": "2.0",
@@ -307,10 +414,68 @@ def check_solana_payment(wallet):
         r = requests.post(RPC_URL, json=payload, timeout=5).json()
         lamports = r.get("result", {}).get("value", 0)
         sol = lamports / 1e9
-        return sol > 0.001
+        return sol >= stake
     except:
         return False
 
+# Start threads
 threading.Thread(target=check_payments, daemon=True).start()
+threading.Thread(target=check_deposits, daemon=True).start()
+
+# Admin commands
+@bot.message_handler(commands=['admin'])
+def admin_cmd(msg):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("💰 Wallet Guthaben", callback_data="admin_balance"))
+    bot.send_message(ADMIN_ID, "👑 Admin-Menü:", reply_markup=markup)
+
+@bot.message_handler(commands=['admin_withdrawals'])
+def admin_withdrawals(msg):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    
+    cur.execute("SELECT withdrawal_id, user_id, amount, timestamp FROM withdrawals WHERE status='pending'")
+    pending = cur.fetchall()
+    if not pending:
+        bot.send_message(ADMIN_ID, "Keine ausstehenden Auszahlungen.")
+        return
+    
+    text = "📝 Ausstehende Auszahlungen:\n\n"
+    for wd in pending:
+        text += f"ID: {wd[0]}\nUser: @{get_username(wd[1])} ({wd[1]})\nBetrag: {wd[2]} SOL\nZeit: {time.ctime(wd[3])}\n\n"
+    bot.send_message(ADMIN_ID, text)
+
+@bot.message_handler(commands=['admin_pay'])
+def admin_pay(msg):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    
+    parts = msg.text.split()
+    if len(parts) < 3:
+        bot.send_message(ADMIN_ID, "Verwendung: /admin_pay <withdrawal_id> <txid>")
+        return
+    
+    try:
+        wd_id = int(parts[1])
+        txid = parts[2]
+        
+        cur.execute("SELECT user_id, amount FROM withdrawals WHERE withdrawal_id=? AND status='pending'", (wd_id,))
+        wd = cur.fetchone()
+        if not wd:
+            bot.send_message(ADMIN_ID, "Ungültige Auszahlungs-ID oder bereits bearbeitet.")
+            return
+        
+        user_id, amount = wd
+        cur.execute("UPDATE withdrawals SET status='paid', txid=? WHERE withdrawal_id=?", (txid, wd_id))
+        add_balance(user_id, -amount)
+        db.commit()
+        
+        bot.send_message(ADMIN_ID, "✅ Auszahlung markiert als bezahlt.")
+        bot.send_message(user_id, f"✅ Deine Auszahlung von {amount} SOL wurde bearbeitet. Transaktions-ID: {txid}")
+    except:
+        bot.send_message(ADMIN_ID, "❌ Fehler bei der Verarbeitung.")
 
 bot.infinity_polling()
