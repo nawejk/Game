@@ -160,8 +160,11 @@ def state_handler(msg):
         wallet = msg.text.strip()
         mid = str(int(time.time()))
         opp = state['opponent']
-        cur.execute("INSERT INTO matches VALUES (?, ?, ?, ?, ?, ?, '', 0, 0, NULL)",
-            (mid, uid, opp, state['game'], state['stake'], wallet))
+        # FIX: wallet1 wird gespeichert
+        cur.execute("""
+            INSERT INTO matches (match_id, p1, p2, game, stake, wallet1, wallet2, paid1, paid2, winner)
+            VALUES (?, ?, ?, ?, ?, ?, '', 0, 0, NULL)
+        """, (mid, uid, opp, state['game'], state['stake'], wallet))
         db.commit()
         states[opp] = {'step': 'wallet_join', 'match_id': mid}
         bot.send_message(opp, f"🎮 Du wurdest herausgefordert!\nSpiel: {state['game']}\nEinsatz: {state['stake']} SOL\nBitte sende deine Wallet-Adresse:")
