@@ -1,3 +1,4 @@
+import os
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import sqlite3
@@ -10,18 +11,21 @@ BOT_WALLET = 'CKZEpwiVqAHLiSbdc8Ebf8xaQ2fofgPCNmzi4cV32M1s'
 ADMIN_ID = 7919108078
 RPC_URL = 'https://api.mainnet-beta.solana.com'
 
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
+# --- DB Setup: Alte DB löschen, neue erstellen ---
+if os.path.exists("gamebot.db"):
+    os.remove("gamebot.db")
+
 db = sqlite3.connect("gamebot.db", check_same_thread=False)
 cur = db.cursor()
 
-# --- DB Setup
-cur.execute('''CREATE TABLE IF NOT EXISTS users (
+cur.execute('''CREATE TABLE users (
     user_id INTEGER PRIMARY KEY,
     username TEXT,
     wallet TEXT,
     balance REAL DEFAULT 0
 )''')
-cur.execute('''CREATE TABLE IF NOT EXISTS matches (
+
+cur.execute('''CREATE TABLE matches (
     match_id TEXT PRIMARY KEY,
     p1 INTEGER,
     p2 INTEGER,
@@ -34,6 +38,8 @@ cur.execute('''CREATE TABLE IF NOT EXISTS matches (
     winner INTEGER DEFAULT NULL
 )''')
 db.commit()
+
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
 
 states = {}
 checked_signatures = set()
@@ -160,7 +166,6 @@ def state_handler(msg):
         wallet = msg.text.strip()
         mid = str(int(time.time()))
         opp = state['opponent']
-        # FIX: wallet1 wird gespeichert
         cur.execute("""
             INSERT INTO matches (match_id, p1, p2, game, stake, wallet1, wallet2, paid1, paid2, winner)
             VALUES (?, ?, ?, ?, ?, ?, '', 0, 0, NULL)
