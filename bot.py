@@ -349,11 +349,8 @@ def check_payments():
                         cur.execute("SELECT paid1, paid2 FROM matches WHERE match_id=?", (mid,))
                         paid1, paid2 = cur.fetchone()
                         if paid1 and paid2:
-                            # NEW: Notify both players to start match
-                            start_markup = InlineKeyboardMarkup()
-                            start_markup.add(InlineKeyboardButton("🏁 Finish & Report Result", callback_data=f"result_{mid}"))
-                            bot.send_message(p1, f"✅ Both players have paid.\nYou can start your match now!", reply_markup=start_markup)
-                            bot.send_message(p2, f"✅ Both players have paid.\nYou can start your match now!", reply_markup=start_markup)
+                            handle_result_button(p1, mid)
+                            handle_result_button(p2, mid)
                             bot.send_message(ADMIN_ID, f"✅ Both players have paid for match {mid}.")
                             bot.send_message(ADMIN_ID_2, f"✅ Both players have paid for match {mid}.")
         except Exception as e:
