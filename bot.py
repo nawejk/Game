@@ -9,6 +9,14 @@ from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 import base64
 import json
+import logging
+
+# Logging konfigurieren
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 BOT_TOKEN = '8113317405:AAERiOi3TM95xU87ys9xIV_L622MLo83t6Q'
 BOT_WALLET = 'CKZEpwiVqAHLiSbdc8Ebf8xaQ2fofgPCNmzi4cV32M1s'
@@ -72,31 +80,53 @@ def create_logo():
     draw = ImageDraw.Draw(img)
     
     try:
-        font = ImageFont.truetype("arial.ttf", 300)
-    except:
+        # Versuche verschiedene Schriftarten
         try:
-            font = ImageFont.truetype("DejaVuSans.ttf", 300)
+            font = ImageFont.truetype("arial.ttf", 300)
         except:
-            font = ImageFont.load_default()
+            font = ImageFont.truetype("DejaVuSans.ttf", 300)
+    except:
+        # Fallback auf Standardschrift
+        font = ImageFont.load_default()
+        # Für load_default skalieren wir die Größe
+        if hasattr(font, 'getsize'):
+            # Ältere Pillow-Versionen
+            w, h = font.getsize("V")
+            font.size = max(w, h)
+        else:
+            # Für neue Versionen
+            font.size = 300
 
     text = "V"
-    w, h = draw.textsize(text, font=font)
+    
+    # Moderner Weg um Textgröße zu bekommen
+    if hasattr(draw, 'textbbox'):
+        bbox = draw.textbbox((0, 0), text, font=font)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+    elif hasattr(font, 'getsize'):
+        # Für ältere Pillow-Versionen
+        w, h = font.getsize(text)
+    else:
+        # Notfall
+        w, h = 300, 300
+    
     pos = ((size[0]-w)//2, (size[1]-h)//2 - 20)
     
-    # Create mask for V
+    # Erstelle Maske für V
     mask = Image.new('L', size, 0)
     mask_draw = ImageDraw.Draw(mask)
     mask_draw.text(pos, text, font=font, fill=255)
     
-    # Create colored parts
+    # Links rot, rechts blau
     red_part = Image.new('RGBA', size, (220, 20, 60, 255))
     blue_part = Image.new('RGBA', size, (30, 144, 255, 255))
     
-    # Split mask into left and right
+    # Maske in links/rechts teilen
     mask_left = mask.crop((0, 0, size[0]//2, size[1]))
     mask_right = mask.crop((size[0]//2, 0, size[0], size[1]))
     
-    # Apply colors
+    # Farbteile anwenden
     img.paste(red_part, (0, 0), mask_left)
     img.paste(blue_part, (size[0]//2, 0), mask_right)
     
@@ -133,12 +163,16 @@ def start(msg):
     cur.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (uid, uname))
     db.commit()
 
-    img = create_logo()
-    bio = BytesIO()
-    bio.name = 'versus_arena_logo.png'
-    img.save(bio, 'PNG')
-    bio.seek(0)
-    bot.send_photo(uid, photo=bio, caption="<b>Willkommen bei Versus Arena!</b>\nDer Ort für spannende 1-gegen-1 Matches.", parse_mode='HTML')
+    try:
+        img = create_logo()
+        bio = BytesIO()
+        bio.name = 'versus_arena_logo.png'
+        img.save(bio, 'PNG')
+        bio.seek(0)
+        bot.send_photo(uid, photo=bio, caption="<b>Willkommen bei Versus Arena!</b>\nDer Ort für spannende 1-gegen-1 Matches.", parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"Error creating logo: {e}")
+        bot.send_message(uid, "<b>Willkommen bei Versus Arena!</b>\nDer Ort für spannende 1-gegen-1 Matches.")
 
     main_menu(uid)
 
@@ -205,7 +239,8 @@ def handle_callback(call):
                 r = requests.post(RPC_URL, json=payload).json()
                 balance = r['result']['value'] / 1e9
                 bot.send_message(ADMIN_ID, f"💰 Bot Wallet Balance: {balance:.4f} SOL")
-            except:
+            except Exception as e:
+                logger.error(f"Balance check error: {e}")
                 bot.send_message(ADMIN_ID, "❌ Fehler beim Abrufen des Guthabens")
 
 def handle_result_button(uid, mid):
@@ -305,16 +340,18 @@ def check_payments():
                     cur.execute("UPDATE matches SET paid1=1 WHERE match_id=?", (mid,))
                     db.commit()
                     p1 = get_match_player(mid, 1)
-                    bot.send_message(p1, "✅ Deine Zahlung wurde erkannt.")
+                    if p1:
+                        bot.send_message(p1, "✅ Deine Zahlung wurde erkannt.")
 
             for (mid, w, paid, created_at, stake) in unpaid2:
                 if check_solana_payment(w, created_at, stake):
                     cur.execute("UPDATE matches SET paid2=1 WHERE match_id=?", (mid,))
                     db.commit()
                     p2 = get_match_player(mid, 2)
-                    bot.send_message(p2, "✅ Deine Zahlung wurde erkannt.")
+                    if p2:
+                        bot.send_message(p2, "✅ Deine Zahlung wurde erkannt.")
         except Exception as e:
-            print("Error checking match payments:", e)
+            logger.error(f"Error checking match payments: {e}")
         time.sleep(60)
 
 def check_deposits():
@@ -331,6 +368,12 @@ def check_deposits():
                 ]
             }
             response = requests.post(RPC_URL, json=payload).json()
+            
+            if 'error' in response:
+                logger.error(f"RPC error: {response['error']}")
+                time.sleep(60)
+                continue
+                
             signatures = [sig['signature'] for sig in response.get('result', [])]
             
             for sig in signatures:
@@ -343,9 +386,14 @@ def check_deposits():
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "getTransaction",
-                    "params": [sig, "json"]
+                    "params": [sig, "jsonParsed"]
                 }
                 tx_resp = requests.post(RPC_URL, json=tx_payload).json()
+                
+                if 'error' in tx_resp or 'result' not in tx_resp:
+                    logger.error(f"Transaction error for {sig}: {tx_resp.get('error', 'No result')}")
+                    continue
+                    
                 tx = tx_resp.get('result', {})
                 
                 # Check if valid transaction
@@ -358,7 +406,7 @@ def check_deposits():
                 
                 # Check instructions for memo
                 for ix in tx.get('transaction', {}).get('message', {}).get('instructions', []):
-                    if ix.get('program') == 'spl-memo':
+                    if ix.get('program') == 'spl-memo' and 'data' in ix:
                         try:
                             memo = base64.b64decode(ix['data']).decode('utf-8')
                         except:
@@ -367,11 +415,13 @@ def check_deposits():
                 # Check balance changes
                 account_keys = tx['transaction']['message']['accountKeys']
                 try:
-                    wallet_index = account_keys.index(BOT_WALLET)
-                    pre_balance = tx['meta']['preBalances'][wallet_index]
-                    post_balance = tx['meta']['postBalances'][wallet_index]
-                    amount = (post_balance - pre_balance) / 1e9
-                except:
+                    if BOT_WALLET in account_keys:
+                        wallet_index = account_keys.index(BOT_WALLET)
+                        pre_balance = tx['meta']['preBalances'][wallet_index]
+                        post_balance = tx['meta']['postBalances'][wallet_index]
+                        amount = (post_balance - pre_balance) / 1e9
+                except Exception as e:
+                    logger.error(f"Balance error: {e}")
                     continue
                 
                 if amount <= 0 or not memo:
@@ -390,18 +440,22 @@ def check_deposits():
                                 (sig, user_id, amount, time.time()))
                     db.commit()
                     bot.send_message(user_id, f"✅ Einzahlung von {amount:.4f} SOL erkannt. Dein Guthaben wurde aktualisiert.")
-                except:
-                    continue
+                    logger.info(f"Deposit processed: {user_id} - {amount} SOL")
+                except Exception as e:
+                    logger.error(f"Deposit processing error: {e}")
         except Exception as e:
-            print("Error checking deposits:", e)
+            logger.error(f"Error checking deposits: {e}")
         time.sleep(60)
 
 def get_match_player(match_id, player_num):
-    cur.execute("SELECT p1, p2 FROM matches WHERE match_id=?", (match_id,))
-    r = cur.fetchone()
-    if not r:
+    try:
+        cur.execute("SELECT p1, p2 FROM matches WHERE match_id=?", (match_id,))
+        r = cur.fetchone()
+        if not r:
+            return None
+        return r[0] if player_num == 1 else r[1]
+    except:
         return None
-    return r[0] if player_num == 1 else r[1]
 
 def check_solana_payment(wallet, created_at, stake):
     try:
@@ -415,7 +469,8 @@ def check_solana_payment(wallet, created_at, stake):
         lamports = r.get("result", {}).get("value", 0)
         sol = lamports / 1e9
         return sol >= stake
-    except:
+    except Exception as e:
+        logger.error(f"Payment check error for {wallet}: {e}")
         return False
 
 # Start threads
@@ -475,7 +530,12 @@ def admin_pay(msg):
         
         bot.send_message(ADMIN_ID, "✅ Auszahlung markiert als bezahlt.")
         bot.send_message(user_id, f"✅ Deine Auszahlung von {amount} SOL wurde bearbeitet. Transaktions-ID: {txid}")
-    except:
+        logger.info(f"Withdrawal processed: ID {wd_id} - {amount} SOL to user {user_id}")
+    except Exception as e:
+        logger.error(f"Withdrawal error: {e}")
         bot.send_message(ADMIN_ID, "❌ Fehler bei der Verarbeitung.")
 
-bot.infinity_polling()
+# Start the bot
+if __name__ == '__main__':
+    logger.info("Starting bot...")
+    bot.infinity_polling()
