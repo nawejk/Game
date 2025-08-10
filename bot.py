@@ -6,7 +6,7 @@ import time
 import threading
 import requests
 
-BOT_TOKEN = '8113317405:AAERiOi3TM95xU87ys9xIV_L622MLo83t6Q'
+BOT_TOKEN = '8447925570:AAG5LsRoHfs3UXTJSgRa2PMjcrR291iDqfo'
 BOT_WALLET = 'CKZEpwiVqAHLiSbdc8Ebf8xaQ2fofgPCNmzi4cV32M1s'
 ADMIN_ID = 7919108078
 RPC_URL = 'https://api.mainnet-beta.solana.com'
@@ -59,16 +59,29 @@ def add_balance(uid, amount):
     cur.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, uid))
     db.commit()
 
-def main_menu(uid):
+def get_user_info_text(uid):
+    cur.execute("SELECT username, balance, wallet FROM users WHERE user_id=?", (uid,))
+    r = cur.fetchone()
+    if not r:
+        return "❌ Benutzer nicht gefunden.\n\n"
+    username, balance, wallet = r
+    wallet_text = wallet if wallet else "Keine Wallet gespeichert"
+    return (f"👤 <b>@{username}</b> | 💰 {balance:.4f} SOL | 🔑 {wallet_text}\n\n")
+
+def main_menu(uid, call=None):
+    user_info = get_user_info_text(uid)
+    menu_text = user_info + "🏠 Hauptmenü - Versus Arena"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🔴 🎮 Match starten", callback_data="start_match"),
         InlineKeyboardButton("🔵 💰 Guthaben", callback_data="balance"),
         InlineKeyboardButton("🔴 📥 Einzahlung", callback_data="deposit"),
         InlineKeyboardButton("🔵 📤 Auszahlung", callback_data="withdraw"),
-        InlineKeyboardButton("🏠 Home", callback_data="home")
     )
-    bot.send_message(uid, "🏠 Hauptmenü - Versus Arena", reply_markup=markup)
+    if call:
+        bot.edit_message_text(menu_text, uid, call.message.message_id, reply_markup=markup)
+    else:
+        bot.send_message(uid, menu_text, reply_markup=markup)
 
 @bot.message_handler(commands=['start'])
 def start(msg):
@@ -78,23 +91,6 @@ def start(msg):
     db.commit()
     bot.send_message(uid, "🔥 Willkommen bei <b>Versus Arena</b>! 🔥")
     main_menu(uid)
-
-@bot.message_handler(commands=['home'])
-def home(msg):
-    uid = msg.from_user.id
-    cur.execute("SELECT username, balance, wallet FROM users WHERE user_id=?", (uid,))
-    r = cur.fetchone()
-    if not r:
-        bot.send_message(uid, "❌ Benutzer nicht gefunden. Bitte /start eingeben.")
-        return
-    username, balance, wallet = r
-    wallet_text = wallet if wallet else "Keine Wallet gespeichert"
-    text = (f"👤 Benutzer: <b>@{username}</b>\n"
-            f"💰 Guthaben: <b>{balance:.4f} SOL</b>\n"
-            f"🔑 Wallet: <code>{wallet_text}</code>")
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🏠 Home", callback_data="home"))
-    bot.send_message(uid, text, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda c: True)
 def handle_callback(call):
@@ -106,29 +102,34 @@ def handle_callback(call):
         for i, g in enumerate(games):
             emoji = "🔴" if i % 2 == 0 else "🔵"
             markup.add(InlineKeyboardButton(f"{emoji} {g}", callback_data=f"game_{g}"))
-        bot.edit_message_text("🎮 Spiel auswählen:", uid, call.message.message_id, reply_markup=markup)
+        user_info = get_user_info_text(uid)
+        bot.edit_message_text(user_info + "🎮 Spiel auswählen:", uid, call.message.message_id, reply_markup=markup)
 
     elif data.startswith("game_"):
         game = data[5:]
         states[uid] = {'step': 'opponent', 'game': game}
-        bot.send_message(uid, "👤 Gegner-Username (ohne @):")
+        user_info = get_user_info_text(uid)
+        bot.edit_message_text(user_info + "👤 Gegner-Username (ohne @):", uid, call.message.message_id)
 
     elif data == "balance":
         bal = get_balance(uid)
-        bot.send_message(uid, f"💰 Dein Guthaben: <b>{bal:.4f} SOL</b>")
+        user_info = get_user_info_text(uid)
+        bot.edit_message_text(user_info + f"💰 Dein Guthaben: <b>{bal:.4f} SOL</b>", uid, call.message.message_id)
 
     elif data == "deposit":
         cur.execute("SELECT wallet FROM users WHERE user_id=?", (uid,))
         wallet = cur.fetchone()[0]
+        user_info = get_user_info_text(uid)
         if not wallet:
             states[uid] = {'step': 'deposit_wallet'}
-            bot.send_message(uid, "🔑 Bitte sende deine Wallet-Adresse für Einzahlungen:")
+            bot.edit_message_text(user_info + "🔑 Bitte sende deine Wallet-Adresse für Einzahlungen:", uid, call.message.message_id)
         else:
-            bot.send_message(uid, f"📥 Sende SOL an:\n<code>{BOT_WALLET}</code>")
+            bot.edit_message_text(user_info + f"📥 Sende SOL an:\n<code>{BOT_WALLET}</code>", uid, call.message.message_id)
 
     elif data == "withdraw":
         states[uid] = {'step': 'withdraw'}
-        bot.send_message(uid, "💸 Betrag zur Auszahlung:")
+        user_info = get_user_info_text(uid)
+        bot.edit_message_text(user_info + "💸 Betrag zur Auszahlung:", uid, call.message.message_id)
 
     elif data.startswith("win_"):
         mid = data.split("_")[1]
@@ -158,22 +159,6 @@ def handle_callback(call):
         bot.send_message(ADMIN_ID, f"🚨 Streitfall Match {mid}: Ein Spieler meldet ein Problem.")
         bot.send_message(uid, "📨 Der Admin wurde informiert. Bitte ggf. Beweise senden.")
 
-    elif data == "home":
-        # Home Callback
-        cur.execute("SELECT username, balance, wallet FROM users WHERE user_id=?", (uid,))
-        r = cur.fetchone()
-        if not r:
-            bot.answer_callback_query(call.id, "❌ Benutzer nicht gefunden.")
-            return
-        username, balance, wallet = r
-        wallet_text = wallet if wallet else "Keine Wallet gespeichert"
-        text = (f"👤 Benutzer: <b>@{username}</b>\n"
-                f"💰 Guthaben: <b>{balance:.4f} SOL</b>\n"
-                f"🔑 Wallet: <code>{wallet_text}</code>")
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🏠 Home", callback_data="home"))
-        bot.edit_message_text(text, uid, call.message.message_id, reply_markup=markup)
-
 def handle_result_button(uid, mid):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🏆 Ich habe gewonnen", callback_data=f"win_{mid}"))
@@ -193,14 +178,16 @@ def state_handler(msg):
             return
         state['opponent'] = r[0]
         state['step'] = 'stake'
-        bot.send_message(uid, "💵 Einsatz in SOL:")
+        user_info = get_user_info_text(uid)
+        bot.send_message(uid, user_info + "💵 Einsatz in SOL:")
 
     elif state['step'] == 'stake':
         try:
             stake = float(msg.text.strip())
             state['stake'] = stake
             state['step'] = 'pay_method'
-            bot.send_message(uid, "💳 Möchtest du mit deinem Guthaben zahlen? Antworte mit 'ja' oder 'nein'.")
+            user_info = get_user_info_text(uid)
+            bot.send_message(uid, user_info + "💳 Möchtest du mit deinem Guthaben zahlen? Antworte mit 'ja' oder 'nein'.")
         except:
             bot.send_message(uid, "❌ Ungültiger Betrag.")
 
@@ -213,11 +200,13 @@ def state_handler(msg):
                 return
             state['pay_with_balance'] = True
             state['step'] = 'wallet'
-            bot.send_message(uid, "🔑 Bitte gib deine Wallet-Adresse an (für Match-Tracking):")
+            user_info = get_user_info_text(uid)
+            bot.send_message(uid, user_info + "🔑 Bitte gib deine Wallet-Adresse an (für Match-Tracking):")
         elif answer == 'nein':
             state['pay_with_balance'] = False
             state['step'] = 'wallet'
-            bot.send_message(uid, "🔑 Bitte gib deine Wallet-Adresse an:")
+            user_info = get_user_info_text(uid)
+            bot.send_message(uid, user_info + "🔑 Bitte gib deine Wallet-Adresse an:")
         else:
             bot.send_message(uid, "❌ Bitte antworte mit 'ja' oder 'nein'.")
 
@@ -262,7 +251,8 @@ def state_handler(msg):
 
         # Gegner nach Zahlungsmethode fragen
         states[uid] = {'step': 'pay_method_join', 'match_id': mid}
-        bot.send_message(uid, "💳 Möchtest du mit deinem Guthaben zahlen? Antworte mit 'ja' oder 'nein'.")
+        user_info = get_user_info_text(uid)
+        bot.send_message(uid, user_info + "💳 Möchtest du mit deinem Guthaben zahlen? Antworte mit 'ja' oder 'nein'.")
 
     elif state['step'] == 'pay_method_join':
         answer = msg.text.strip().lower()
@@ -305,7 +295,8 @@ def state_handler(msg):
         wallet = msg.text.strip()
         cur.execute("UPDATE users SET wallet=? WHERE user_id=?", (wallet, uid))
         db.commit()
-        bot.send_message(uid, f"✅ Wallet gespeichert.\nSende jetzt SOL an:\n<code>{BOT_WALLET}</code>")
+        user_info = get_user_info_text(uid)
+        bot.send_message(uid, user_info + f"✅ Wallet gespeichert.\nSende jetzt SOL an:\n<code>{BOT_WALLET}</code>")
         states.pop(uid)
 
 
