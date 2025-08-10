@@ -65,9 +65,10 @@ def main_menu(uid):
         InlineKeyboardButton("🔴 🎮 Match starten", callback_data="start_match"),
         InlineKeyboardButton("🔵 💰 Guthaben", callback_data="balance"),
         InlineKeyboardButton("🔴 📥 Einzahlung", callback_data="deposit"),
-        InlineKeyboardButton("🔵 📤 Auszahlung", callback_data="withdraw")
+        InlineKeyboardButton("🔵 📤 Auszahlung", callback_data="withdraw"),
+        InlineKeyboardButton("🏠 Home", callback_data="home")
     )
-    bot.send_message(uid, "🏠 Hauptmenü", reply_markup=markup)
+    bot.send_message(uid, "🏠 Hauptmenü - Versus Arena", reply_markup=markup)
 
 @bot.message_handler(commands=['start'])
 def start(msg):
@@ -77,6 +78,23 @@ def start(msg):
     db.commit()
     bot.send_message(uid, "🔥 Willkommen bei <b>Versus Arena</b>! 🔥")
     main_menu(uid)
+
+@bot.message_handler(commands=['home'])
+def home(msg):
+    uid = msg.from_user.id
+    cur.execute("SELECT username, balance, wallet FROM users WHERE user_id=?", (uid,))
+    r = cur.fetchone()
+    if not r:
+        bot.send_message(uid, "❌ Benutzer nicht gefunden. Bitte /start eingeben.")
+        return
+    username, balance, wallet = r
+    wallet_text = wallet if wallet else "Keine Wallet gespeichert"
+    text = (f"👤 Benutzer: <b>@{username}</b>\n"
+            f"💰 Guthaben: <b>{balance:.4f} SOL</b>\n"
+            f"🔑 Wallet: <code>{wallet_text}</code>")
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🏠 Home", callback_data="home"))
+    bot.send_message(uid, text, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda c: True)
 def handle_callback(call):
@@ -100,7 +118,13 @@ def handle_callback(call):
         bot.send_message(uid, f"💰 Dein Guthaben: <b>{bal:.4f} SOL</b>")
 
     elif data == "deposit":
-        bot.send_message(uid, f"📥 Sende SOL an:\n<code>{BOT_WALLET}</code>")
+        cur.execute("SELECT wallet FROM users WHERE user_id=?", (uid,))
+        wallet = cur.fetchone()[0]
+        if not wallet:
+            states[uid] = {'step': 'deposit_wallet'}
+            bot.send_message(uid, "🔑 Bitte sende deine Wallet-Adresse für Einzahlungen:")
+        else:
+            bot.send_message(uid, f"📥 Sende SOL an:\n<code>{BOT_WALLET}</code>")
 
     elif data == "withdraw":
         states[uid] = {'step': 'withdraw'}
@@ -134,6 +158,22 @@ def handle_callback(call):
         bot.send_message(ADMIN_ID, f"🚨 Streitfall Match {mid}: Ein Spieler meldet ein Problem.")
         bot.send_message(uid, "📨 Der Admin wurde informiert. Bitte ggf. Beweise senden.")
 
+    elif data == "home":
+        # Home Callback
+        cur.execute("SELECT username, balance, wallet FROM users WHERE user_id=?", (uid,))
+        r = cur.fetchone()
+        if not r:
+            bot.answer_callback_query(call.id, "❌ Benutzer nicht gefunden.")
+            return
+        username, balance, wallet = r
+        wallet_text = wallet if wallet else "Keine Wallet gespeichert"
+        text = (f"👤 Benutzer: <b>@{username}</b>\n"
+                f"💰 Guthaben: <b>{balance:.4f} SOL</b>\n"
+                f"🔑 Wallet: <code>{wallet_text}</code>")
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🏠 Home", callback_data="home"))
+        bot.edit_message_text(text, uid, call.message.message_id, reply_markup=markup)
+
 def handle_result_button(uid, mid):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🏆 Ich habe gewonnen", callback_data=f"win_{mid}"))
@@ -144,7 +184,6 @@ def state_handler(msg):
     uid = msg.from_user.id
     state = states[uid]
 
-    # Gegner eingeben
     if state['step'] == 'opponent':
         opponent = msg.text.strip().lstrip("@")
         cur.execute("SELECT user_id FROM users WHERE username=?", (opponent,))
@@ -156,7 +195,6 @@ def state_handler(msg):
         state['step'] = 'stake'
         bot.send_message(uid, "💵 Einsatz in SOL:")
 
-    # Einsatz eingeben
     elif state['step'] == 'stake':
         try:
             stake = float(msg.text.strip())
@@ -166,7 +204,6 @@ def state_handler(msg):
         except:
             bot.send_message(uid, "❌ Ungültiger Betrag.")
 
-    # Zahlungsmethode wählen
     elif state['step'] == 'pay_method':
         answer = msg.text.strip().lower()
         if answer == 'ja':
@@ -176,17 +213,18 @@ def state_handler(msg):
                 return
             state['pay_with_balance'] = True
             state['step'] = 'wallet'
-            bot.send_message(uid, "🔑 Bitte gib trotzdem deine Wallet-Adresse an (für Match-Tracking):")
+            bot.send_message(uid, "🔑 Bitte gib deine Wallet-Adresse an (für Match-Tracking):")
         elif answer == 'nein':
             state['pay_with_balance'] = False
             state['step'] = 'wallet'
-            bot.send_message(uid, "🔑 Deine Wallet-Adresse:")
+            bot.send_message(uid, "🔑 Bitte gib deine Wallet-Adresse an:")
         else:
             bot.send_message(uid, "❌ Bitte antworte mit 'ja' oder 'nein'.")
 
-    # Wallet des Herausforderers eingeben
     elif state['step'] == 'wallet':
         wallet = msg.text.strip()
+        cur.execute("UPDATE users SET wallet=? WHERE user_id=?", (wallet, uid))
+        db.commit()
         mid = str(int(time.time()))
         opp = state['opponent']
         pay_with_balance = state.get('pay_with_balance', False)
@@ -203,27 +241,29 @@ def state_handler(msg):
             cur.execute("UPDATE matches SET paid1=1 WHERE match_id=?", (mid,))
             db.commit()
             bot.send_message(uid, f"✅ Du hast mit deinem Guthaben bezahlt. Das Match wird gestartet.")
+        else:
+            bot.send_message(uid, f"✅ Bitte sende {state['stake']} SOL an:\n<code>{BOT_WALLET}</code>")
 
+        challenger_name = get_username(uid)
         states[opp] = {'step': 'wallet_join', 'match_id': mid}
-        bot.send_message(opp, f"🎮 Du wurdest herausgefordert!\nSpiel: {state['game']}\nEinsatz: {state['stake']} SOL\nBitte sende deine Wallet-Adresse:")
-
-        if not pay_with_balance:
-            bot.send_message(uid, f"✅ Sende {state['stake']} SOL an:\n<code>{BOT_WALLET}</code>")
+        bot.send_message(opp, f"🎮 Du wurdest von <b>@{challenger_name}</b> herausgefordert!\n"
+                              f"Spiel: {state['game']}\n"
+                              f"Einsatz: {state['stake']} SOL\n"
+                              f"Bitte sende deine Wallet-Adresse:")
 
         states.pop(uid)
 
-    # Wallet des Gegners eingeben
     elif state['step'] == 'wallet_join':
         wallet = msg.text.strip()
         mid = state['match_id']
         cur.execute("UPDATE matches SET wallet2=? WHERE match_id=?", (wallet, mid))
+        cur.execute("UPDATE users SET wallet=? WHERE user_id=?", (wallet, uid))
         db.commit()
 
         # Gegner nach Zahlungsmethode fragen
         states[uid] = {'step': 'pay_method_join', 'match_id': mid}
         bot.send_message(uid, "💳 Möchtest du mit deinem Guthaben zahlen? Antworte mit 'ja' oder 'nein'.")
 
-    # Zahlungsmethode Gegner
     elif state['step'] == 'pay_method_join':
         answer = msg.text.strip().lower()
         mid = state['match_id']
@@ -240,13 +280,12 @@ def state_handler(msg):
             db.commit()
             bot.send_message(uid, f"✅ Du hast mit deinem Guthaben bezahlt. Das Match wird gestartet.")
         elif answer == 'nein':
-            bot.send_message(uid, f"✅ Sende {stake} SOL an:\n<code>{BOT_WALLET}</code>")
+            bot.send_message(uid, f"✅ Bitte sende {stake} SOL an:\n<code>{BOT_WALLET}</code>")
         else:
             bot.send_message(uid, "❌ Bitte antworte mit 'ja' oder 'nein'.")
             return
         states.pop(uid)
 
-    # Auszahlung
     elif state['step'] == 'withdraw':
         try:
             amount = float(msg.text.strip())
@@ -261,6 +300,14 @@ def state_handler(msg):
             states.pop(uid)
         except:
             bot.send_message(uid, "❌ Ungültiger Betrag.")
+
+    elif state['step'] == 'deposit_wallet':
+        wallet = msg.text.strip()
+        cur.execute("UPDATE users SET wallet=? WHERE user_id=?", (wallet, uid))
+        db.commit()
+        bot.send_message(uid, f"✅ Wallet gespeichert.\nSende jetzt SOL an:\n<code>{BOT_WALLET}</code>")
+        states.pop(uid)
+
 
 # --- Solana-Zahlungserkennung ---
 def get_tx_details(sig):
