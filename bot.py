@@ -6,6 +6,7 @@ import time
 import threading
 import requests
 
+# --- CONFIG ---
 BOT_TOKEN = '8113317405:AAERiOi3TM95xU87ys9xIV_L622MLo83t6Q'
 BOT_WALLET = 'CKZEpwiVqAHLiSbdc8Ebf8xaQ2fofgPCNmzi4cV32M1s'
 ADMIN_ID = 7919108078
@@ -144,7 +145,6 @@ def handle_callback(call):
             bot.send_message(uid, "⚠️ A winner has already been reported.")
             return
 
-        # Set winner
         cur.execute("UPDATE matches SET winner=? WHERE match_id=?", (uid, mid))
         add_balance(uid, stake * 2)
         db.commit()
@@ -226,7 +226,6 @@ def state_handler(msg):
         db.commit()
 
         if pay_with_balance:
-            # Deduct balance and mark paid
             cur.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (state['stake'], uid))
             cur.execute("UPDATE matches SET paid1=1 WHERE match_id=?", (mid,))
             db.commit()
@@ -249,8 +248,6 @@ def state_handler(msg):
         cur.execute("UPDATE matches SET wallet2=? WHERE match_id=?", (wallet, mid))
         cur.execute("UPDATE users SET wallet=? WHERE user_id=?", (wallet, uid))
         db.commit()
-
-        # Ask payment method for opponent
         states[uid] = {'step': 'pay_method_join', 'match_id': mid}
         user_info = get_user_info_text(uid)
         bot.send_message(uid, user_info + "💳 Do you want to pay with your balance? Reply 'yes' or 'no'.")
@@ -260,7 +257,6 @@ def state_handler(msg):
         mid = state['match_id']
         cur.execute("SELECT stake FROM matches WHERE match_id=?", (mid,))
         stake = cur.fetchone()[0]
-
         if answer == 'yes':
             bal = get_balance(uid)
             if bal < stake:
@@ -300,7 +296,6 @@ def state_handler(msg):
         bot.send_message(uid, user_info + f"✅ Wallet saved.\nNow send SOL to:\n<code>{BOT_WALLET}</code>")
         states.pop(uid)
 
-# --- Solana payment detection ---
 def get_tx_details(sig):
     try:
         r = requests.post(RPC_URL, json={
@@ -331,42 +326,40 @@ def check_payments():
                 if not txd:
                     continue
                 sender, amount = txd['from'], txd['amount']
-                # normal deposit
                 cur.execute("SELECT user_id FROM users WHERE wallet=?", (sender,))
                 u = cur.fetchone()
                 if u:
                     add_balance(u[0], amount)
                     bot.send_message(u[0], f"✅ Deposit detected: {amount:.4f} SOL")
                     continue
-                # match payment
                 cur.execute("SELECT match_id, p1, p2, wallet1, wallet2, paid1, paid2, stake FROM matches")
                 for m in cur.fetchall():
                     mid, p1, p2, w1, w2, pd1, pd2, stake = m
                     updated = False
                     if sender == w1 and not pd1 and amount >= stake:
                         cur.execute("UPDATE matches SET paid1=1 WHERE match_id=?", (mid,))
-                        bot.send_message(p1, f"✅ Payment received. Match will start soon.")
+                        bot.send_message(p1, f"✅ Payment received. Waiting for opponent.")
                         updated = True
                     elif sender == w2 and not pd2 and amount >= stake:
                         cur.execute("UPDATE matches SET paid2=1 WHERE match_id=?", (mid,))
-                        bot.send_message(p2, f"✅ Payment received. Match will start soon.")
+                        bot.send_message(p2, f"✅ Payment received. Waiting for opponent.")
                         updated = True
                     db.commit()
                     if updated:
                         cur.execute("SELECT paid1, paid2 FROM matches WHERE match_id=?", (mid,))
                         paid1, paid2 = cur.fetchone()
                         if paid1 and paid2:
-                            # Both paid - show result buttons
-                            handle_result_button(p1, mid)
-                            handle_result_button(p2, mid)
-                            # notify admins
+                            # NEW: Notify both players to start match
+                            start_markup = InlineKeyboardMarkup()
+                            start_markup.add(InlineKeyboardButton("🏁 Finish & Report Result", callback_data=f"result_{mid}"))
+                            bot.send_message(p1, f"✅ Both players have paid.\nYou can start your match now!", reply_markup=start_markup)
+                            bot.send_message(p2, f"✅ Both players have paid.\nYou can start your match now!", reply_markup=start_markup)
                             bot.send_message(ADMIN_ID, f"✅ Both players have paid for match {mid}.")
                             bot.send_message(ADMIN_ID_2, f"✅ Both players have paid for match {mid}.")
         except Exception as e:
             print("Payment check error:", e)
         time.sleep(5)
 
-# --- Start ---
-threading.Thread(target=check_payments, daemon=True).start()
 print("🤖 Versus Arena Bot running...")
+threading.Thread(target=check_payments, daemon=True).start()
 bot.infinity_polling()
