@@ -466,60 +466,93 @@ def get_tx_details(sig):
 def check_payments():
     while True:
         try:
-            cur = db.cursor()
-            cur.execute("SELECT match_id, player1, player2, wallet1, wallet2, stake, paid1, paid2 FROM matches WHERE status='waiting'")
-            matches = cur.fetchall()
+            r = requests.post(RPC_URL, json={
+                "jsonrpc": "2.0", "id": 1, "method": "getSignaturesForAddress",
+                "params": [BOT_WALLET, {"limit": 25}]
+            }, timeout=10).json()
+            
+            results = r.get('result') or []
+            for tx in results:
+                sig = tx.get('signature')
+                if not sig:
+                    continue
+                if sig in checked_signatures:
+                    continue
+                checked_signatures.add(sig)
+                logging.info("Found signature: %s", sig)
 
-            for match in matches:
-                mid, p1, p2, w1, w2, stake, paid1, paid2 = match
-                transactions = get_solana_transactions(CENTRAL_WALLET)
+                txd = get_tx_details(sig)
+                if not txd:
+                    logging.info("No usable tx details for %s", sig)
+                    continue
 
-                for tx in transactions:
-                    sender = tx["sender"]
-                    amount = tx["amount"]
+                sender = txd['from']
+                amount = txd['amount']
+                if not sender:
+                    logging.info("Couldn't determine sender for tx %s", sig)
+                    continue
 
-                    # 1️⃣ Falls Wallet in DB leer, aber Payment kommt → sofort speichern
-                    if sender and not w1 and sender != w2:
-                        cur.execute("UPDATE matches SET wallet1=? WHERE match_id=?", (sender, mid))
-                        cur.execute("UPDATE users SET wallet=? WHERE user_id=?", (sender, p1))
-                        db.commit()
-                        w1 = sender
-                    if sender and not w2 and sender != w1:
-                        cur.execute("UPDATE matches SET wallet2=? WHERE match_id=?", (sender, mid))
-                        cur.execute("UPDATE users SET wallet=? WHERE user_id=?", (sender, p2))
-                        db.commit()
-                        w2 = sender
+                # 1) Direkter Deposit auf user wallet?
+                cur.execute("SELECT user_id FROM users WHERE wallet=?", (sender,))
+                u = cur.fetchone()
+                if u:
+                    uid = u[0]
+                    add_balance(uid, amount)
+                    try:
+                        bot.send_message(uid, f"✅ Deposit detected: {amount:.4f} SOL")
+                    except Exception as e:
+                        logging.warning("Failed to send deposit notification to %s: %s", uid, e)
+                    logging.info("Credited deposit %.9f SOL to user %s (wallet %s)", amount, uid, sender)
+                    continue
 
-                    # 2️⃣ Payment-Flags setzen
-                    if sender == w1 and not paid1 and amount >= stake:
+                # 2) Match-Zahlung prüfen — nur offene Matches (spart Arbeit)
+                cur.execute("SELECT match_id, p1, p2, wallet1, wallet2, paid1, paid2, stake FROM matches WHERE paid1=0 OR paid2=0")
+                rows = cur.fetchall()
+                for m in rows:
+                    mid, p1, p2, w1, w2, pd1, pd2, stake = m
+                    w1 = (w1 or '').strip()
+                    w2 = (w2 or '').strip()
+                    updated = False
+                    
+                    # matchiert nur, wenn sender mit wallet übereinstimmt und Betrag >= stake
+                    if sender == w1 and not pd1 and amount >= stake - 1e-9:
                         cur.execute("UPDATE matches SET paid1=1 WHERE match_id=?", (mid,))
                         db.commit()
-                        paid1 = 1
-                        bot.send_message(p1, f"✅ Payment received ({amount} SOL). Waiting for opponent.")
-                    elif sender == w2 and not paid2 and amount >= stake:
+                        try:
+                            bot.send_message(p1, f"✅ Payment received. Waiting for opponent.")
+                        except Exception as e:
+                            logging.warning("Failed to send payment confirmation to %s: %s", p1, e)
+                        logging.info("Match %s: paid1 set by %s (amount=%.9f, stake=%.9f)", mid, sender, amount, stake)
+                        updated = True
+                    elif sender == w2 and not pd2 and amount >= stake - 1e-9:
                         cur.execute("UPDATE matches SET paid2=1 WHERE match_id=?", (mid,))
                         db.commit()
-                        paid2 = 1
-                        bot.send_message(p2, f"✅ Payment received ({amount} SOL). Waiting for opponent.")
+                        try:
+                            bot.send_message(p2, f"✅ Payment received. Waiting for opponent.")
+                        except Exception as e:
+                            logging.warning("Failed to send payment confirmation to %s: %s", p2, e)
+                        logging.info("Match %s: paid2 set by %s (amount=%.9f, stake=%.9f)", mid, sender, amount, stake)
+                        updated = True
 
-                    # 3️⃣ Sofort prüfen → beide bezahlt?
-                    if paid1 and paid2:
-                        bot.send_message(p1, "✅ Both players have paid. The match can start now!")
-                        bot.send_message(p2, "✅ Both players have paid. The match can start now!")
-                        handle_result_button(p1, mid)
-                        handle_result_button(p2, mid)
-                        cur.execute("UPDATE matches SET status='playing' WHERE match_id=?", (mid,))
-                        db.commit()
+                    if updated:
+                        cur.execute("SELECT paid1, paid2 FROM matches WHERE match_id=?", (mid,))
+                        paid1, paid2 = cur.fetchone()
+                        logging.info("Match %s status after update: paid1=%s paid2=%s", mid, paid1, paid2)
+                        if paid1 and paid2:
+                            try:
+                                bot.send_message(p1, "✅ Both players have paid. The match can start now!")
+                                bot.send_message(p2, "✅ Both players have paid. The match can start now!")
+                                handle_result_button(p1, mid)
+                                handle_result_button(p2, mid)
+                                logging.info("Result buttons sent for match %s", mid)
+                            except Exception as e:
+                                logging.warning("Failed to send match start notifications: %s", e)
 
         except Exception as e:
-            print(f"Error in check_payments: {e}")
-
-        time.sleep(30)  # alle 10 Sekunden prüfen
+            logging.exception("Payment check error: %s", e)
+        time.sleep(5)
 
 if __name__ == "__main__":
     logging.info("🤖 Versus Arena Bot starting...")
     threading.Thread(target=check_payments, daemon=True).start()
     bot.infinity_polling()
-
-
-
