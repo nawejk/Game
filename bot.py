@@ -17,9 +17,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = 'DEIN_BOT_TOKEN'
-BOT_WALLET = 'DEINE_SOL_WALLET'
-ADMIN_ID = 123456789
+BOT_TOKEN = '8113317405:AAERiOi3TM95xU87ys9xIV_L622MLo83t6Q'
+BOT_WALLET = 'CKZEpwiVqAHLiSbdc8Ebf8xaQ2fofgPCNmzi4cV32M1s'
+ADMIN_ID = 7919108078
 RPC_URL = 'https://api.mainnet-beta.solana.com'
 
 # --- DB Setup ---
