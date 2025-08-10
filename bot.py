@@ -156,8 +156,6 @@ def handle_callback(call):
         bot.send_message(opponent, f"⚠️ @{get_username(uid)} has reported victory.\nIf you have an issue, please report:", reply_markup=markup)
 
     elif data.startswith("dispute_"):
-        mid = data.split("_")[1]
-        bot.send_message(ADMIN_ID, f"🚨 Dispute in match {mid}: A player reported an issue.")
         bot.send_message(uid, "📨 The admin has been informed. Please send any evidence if necessary.")
 
 def handle_result_button(uid, mid):
@@ -283,7 +281,6 @@ def state_handler(msg):
             cur.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (amount, uid))
             db.commit()
             bot.send_message(uid, "✅ Your withdrawal is being processed (1–2 hours).")
-            bot.send_message(ADMIN_ID, f"📤 Withdrawal request from @{get_username(uid)} for {amount} SOL.")
             states.pop(uid)
         except:
             bot.send_message(uid, "❌ Invalid amount.")
@@ -299,8 +296,8 @@ def state_handler(msg):
 def get_tx_details(sig):
     try:
         r = requests.post(RPC_URL, json={
-            "jsonrpc":"2.0","id":1,"method":"getTransaction",
-            "params":[sig, {"encoding":"jsonParsed"}]
+            "jsonrpc": "2.0", "id": 1, "method": "getTransaction",
+            "params": [sig, {"encoding": "jsonParsed"}]
         }).json()
         instr = r['result']['transaction']['message']['instructions']
         for i in instr:
@@ -314,24 +311,28 @@ def check_payments():
     while True:
         try:
             r = requests.post(RPC_URL, json={
-                "jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress",
-                "params":[BOT_WALLET, {"limit": 25}]
+                "jsonrpc": "2.0", "id": 1, "method": "getSignaturesForAddress",
+                "params": [BOT_WALLET, {"limit": 25}]
             }).json()
             for tx in r['result']:
                 sig = tx['signature']
                 if sig in checked_signatures:
                     continue
                 checked_signatures.add(sig)
+
                 txd = get_tx_details(sig)
                 if not txd:
                     continue
+
                 sender, amount = txd['from'], txd['amount']
+
                 cur.execute("SELECT user_id FROM users WHERE wallet=?", (sender,))
                 u = cur.fetchone()
                 if u:
                     add_balance(u[0], amount)
                     bot.send_message(u[0], f"✅ Deposit detected: {amount:.4f} SOL")
                     continue
+
                 cur.execute("SELECT match_id, p1, p2, wallet1, wallet2, paid1, paid2, stake FROM matches")
                 for m in cur.fetchall():
                     mid, p1, p2, w1, w2, pd1, pd2, stake = m
@@ -345,14 +346,16 @@ def check_payments():
                         bot.send_message(p2, f"✅ Payment received. Waiting for opponent.")
                         updated = True
                     db.commit()
+
                     if updated:
                         cur.execute("SELECT paid1, paid2 FROM matches WHERE match_id=?", (mid,))
                         paid1, paid2 = cur.fetchone()
                         if paid1 and paid2:
+                            bot.send_message(p1, "✅ Both players have paid. The match can start now!")
+                            bot.send_message(p2, "✅ Both players have paid. The match can start now!")
                             handle_result_button(p1, mid)
                             handle_result_button(p2, mid)
-                            bot.send_message(ADMIN_ID, f"✅ Both players have paid for match {mid}.")
-                            bot.send_message(ADMIN_ID_2, f"✅ Both players have paid for match {mid}.")
+
         except Exception as e:
             print("Payment check error:", e)
         time.sleep(5)
