@@ -51,7 +51,6 @@ states = {}
 checked_signatures = set()
 games = ['FIFA', 'Fortnite', 'Call of Duty', 'Mario Kart']
 
-# --- Helper-Funktionen ---
 def get_username(uid):
     cur.execute("SELECT username FROM users WHERE user_id=?", (uid,))
     r = cur.fetchone()
@@ -76,11 +75,6 @@ def get_user_info_text(uid):
     wallet_text = wallet if wallet else "No wallet saved"
     return (f"👤 <b>@{username}</b> | 💰 {balance:.4f} SOL | 🔑 {wallet_text}\n\n")
 
-def get_user_wallet_from_db(uid):
-    cur.execute("SELECT wallet FROM users WHERE user_id=?", (uid,))
-    r = cur.fetchone()
-    return r[0] if r else None
-
 def main_menu(uid, call=None):
     user_info = get_user_info_text(uid)
     menu_text = user_info + "🏠 Main Menu - Versus Arena\n🌐 <a href='https://versus-arena.com/'>versus-arena.com</a>"
@@ -104,7 +98,6 @@ def handle_result_button(uid, mid):
     markup.add(InlineKeyboardButton("🏆 I won", callback_data=f"win_{mid}"))
     bot.send_message(uid, "❓ Report result:", reply_markup=markup)
 
-# --- Bot Start ---
 @bot.message_handler(commands=['start'])
 def start(msg):
     uid = msg.from_user.id
@@ -114,129 +107,419 @@ def start(msg):
     bot.send_message(uid, "🔥 Welcome to <b>Versus Arena</b>! 🔥")
     main_menu(uid)
 
-# --- Callback Handler ---
 @bot.callback_query_handler(func=lambda c: True)
 def handle_callback(call):
     uid = call.from_user.id
     data = call.data
-    # Unverändert wie in deinem Code...
-    # (Hier bleibt der Rest gleich – ich ändere nur in check_payments unten)
 
-# --- State Handler ---
+    if data == "start_match":
+        markup = InlineKeyboardMarkup()
+        for i, g in enumerate(games):
+            emoji = "🔴" if i % 2 == 0 else "🔵"
+            markup.add(InlineKeyboardButton(f"{emoji} {g}", callback_data=f"game_{g}"))
+        user_info = get_user_info_text(uid)
+        bot.edit_message_text(user_info + "🎮 Select a game:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif data.startswith("game_"):
+        game = data[5:]
+        states[uid] = {'step': 'opponent', 'game': game}
+        user_info = get_user_info_text(uid)
+        bot.edit_message_text(user_info + "👤 Opponent username (without @):", call.message.chat.id, call.message.message_id)
+
+    elif data == "balance":
+        bal = get_balance(uid)
+        user_info = get_user_info_text(uid)
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🏠 Back to Menu", callback_data="back_to_menu"))
+        bot.edit_message_text(user_info + f"💰 Your balance: <b>{bal:.4f} SOL</b>", 
+                              call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif data == "deposit":
+        cur.execute("SELECT wallet FROM users WHERE user_id=?", (uid,))
+        r = cur.fetchone()
+        wallet = r[0] if r and r[0] else None
+        user_info = get_user_info_text(uid)
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🏠 Back to Menu", callback_data="back_to_menu"))
+        if not wallet:
+            states[uid] = {'step': 'deposit_wallet'}
+            bot.edit_message_text(user_info + "🔑 Please send your wallet address for deposits:", 
+                                  call.message.chat.id, call.message.message_id, reply_markup=markup)
+        else:
+            bot.edit_message_text(user_info + f"📥 Send SOL to:\n<code>{BOT_WALLET}</code>", 
+                                  call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif data == "withdraw":
+        states[uid] = {'step': 'withdraw'}
+        user_info = get_user_info_text(uid)
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("❌ Cancel", callback_data="back_to_menu"))
+        bot.edit_message_text(user_info + "💸 Enter amount to withdraw:", 
+                              call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif data == "back_to_menu":
+        # Clear any active state and return to main menu
+        if uid in states:
+            states.pop(uid)
+        main_menu(uid, call)
+
+    elif data.startswith("win_"):
+        mid = data.split("_", 1)[1]
+        cur.execute("SELECT p1, p2, stake, winner FROM matches WHERE match_id=?", (mid,))
+        match = cur.fetchone()
+        if not match:
+            bot.send_message(uid, "❌ Match not found.")
+            return
+        p1, p2, stake, winner = match
+        if winner:
+            bot.send_message(uid, "⚠️ A winner has already been reported.")
+            return
+
+        cur.execute("UPDATE matches SET winner=? WHERE match_id=?", (uid, mid))
+        add_balance(uid, stake * 2)
+        db.commit()
+        bot.send_message(uid, "🏆 You won! Your balance has been credited.")
+
+        opponent = p2 if uid == p1 else p1
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("❗ Report issue", callback_data=f"dispute_{mid}"))
+        bot.send_message(opponent, f"⚠️ @{get_username(uid)} has reported victory.\nIf you have an issue, please report:", reply_markup=markup)
+
+    elif data.startswith("dispute_"):
+        bot.send_message(uid, "📨 The admin has been informed. Please send any evidence if necessary.")
+        # Notify admins
+        mid = data.split("_", 1)[1]
+        cur.execute("SELECT p1, p2, game, stake FROM matches WHERE match_id=?", (mid,))
+        match_info = cur.fetchone()
+        if match_info:
+            p1, p2, game, stake = match_info
+            dispute_msg = f"🚨 DISPUTE REPORTED 🚨\nMatch ID: {mid}\nPlayer 1: @{get_username(p1)}\nPlayer 2: @{get_username(p2)}\nGame: {game}\nStake: {stake} SOL\nDisputed by: @{get_username(uid)}"
+            try:
+                bot.send_message(ADMIN_ID, dispute_msg)
+            except:
+                pass
+            try:
+                bot.send_message(ADMIN_ID_2, dispute_msg)
+            except:
+                pass
+
 @bot.message_handler(func=lambda m: m.from_user.id in states)
 def state_handler(msg):
-    # Unverändert wie in deinem Code...
-    # (Auch hier keine Änderungen nötig)
+    uid = msg.from_user.id
+    state = states[uid]
 
-# --- RPC Payment Check ---
+    if state['step'] == 'opponent':
+        opponent = msg.text.strip().lstrip("@")
+        cur.execute("SELECT user_id FROM users WHERE username=?", (opponent,))
+        r = cur.fetchone()
+        if not r:
+            bot.send_message(uid, "❌ Opponent not found. Make sure they have started the bot first.")
+            return
+        if r[0] == uid:
+            bot.send_message(uid, "❌ You cannot challenge yourself!")
+            return
+        state['opponent'] = r[0]
+        state['step'] = 'stake'
+        user_info = get_user_info_text(uid)
+        bot.send_message(uid, user_info + "💵 Stake amount in SOL:")
+
+    elif state['step'] == 'stake':
+        try:
+            stake = float(msg.text.strip())
+            if stake <= 0:
+                bot.send_message(uid, "❌ Stake must be greater than 0.")
+                return
+            state['stake'] = stake
+            state['step'] = 'pay_method'
+            user_info = get_user_info_text(uid)
+            bot.send_message(uid, user_info + "💳 Do you want to pay with your balance? Reply 'yes' or 'no'.")
+        except:
+            bot.send_message(uid, "❌ Invalid amount. Please enter a valid number.")
+
+    elif state['step'] == 'pay_method':
+        answer = msg.text.strip().lower()
+        if answer == 'yes':
+            bal = get_balance(uid)
+            if bal < state['stake']:
+                bot.send_message(uid, f"❌ Your balance ({bal:.4f} SOL) is insufficient.")
+                return
+            state['pay_with_balance'] = True
+            state['step'] = 'wallet'
+            user_info = get_user_info_text(uid)
+            bot.send_message(uid, user_info + "🔑 Please provide your wallet address (for match tracking):")
+        elif answer == 'no':
+            state['pay_with_balance'] = False
+            state['step'] = 'wallet'
+            user_info = get_user_info_text(uid)
+            bot.send_message(uid, user_info + "🔑 Please provide your wallet address:")
+        else:
+            bot.send_message(uid, "❌ Please reply with 'yes' or 'no'.")
+
+    elif state['step'] == 'wallet':
+        wallet = msg.text.strip()
+        if len(wallet) < 20:  # Basic wallet validation
+            bot.send_message(uid, "❌ Invalid wallet address. Please provide a valid Solana wallet address.")
+            return
+            
+        cur.execute("UPDATE users SET wallet=? WHERE user_id=?", (wallet, uid))
+        db.commit()
+        mid = str(int(time.time()))
+        opp = state['opponent']
+        pay_with_balance = state.get('pay_with_balance', False)
+
+        cur.execute("""
+            INSERT INTO matches (match_id, p1, p2, game, stake, wallet1, wallet2, paid1, paid2, winner)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, NULL)
+        """, (mid, uid, opp, state['game'], state['stake'], wallet, ''))
+        db.commit()
+
+        if pay_with_balance:
+            cur.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (state['stake'], uid))
+            cur.execute("UPDATE matches SET paid1=1 WHERE match_id=?", (mid,))
+            db.commit()
+            bot.send_message(uid, f"✅ You paid with your balance. The match will start once your opponent pays.")
+        else:
+            bot.send_message(uid, f"✅ Please send {state['stake']} SOL to:\n<code>{BOT_WALLET}</code>")
+
+        challenger_name = get_username(uid)
+        states[opp] = {'step': 'wallet_join', 'match_id': mid}
+        bot.send_message(opp, f"🎮 You have been challenged by <b>@{challenger_name}</b>!\n"
+                              f"Game: {state['game']}\n"
+                              f"Stake: {state['stake']} SOL\n"
+                              f"Please send your wallet address:")
+
+        states.pop(uid)
+
+    elif state['step'] == 'wallet_join':
+        wallet = msg.text.strip()
+        if len(wallet) < 20:  # Basic wallet validation
+            bot.send_message(uid, "❌ Invalid wallet address. Please provide a valid Solana wallet address.")
+            return
+            
+        mid = state['match_id']
+        cur.execute("UPDATE matches SET wallet2=? WHERE match_id=?", (wallet, mid))
+        cur.execute("UPDATE users SET wallet=? WHERE user_id=?", (wallet, uid))
+        db.commit()
+        states[uid] = {'step': 'pay_method_join', 'match_id': mid}
+        user_info = get_user_info_text(uid)
+        bot.send_message(uid, user_info + "💳 Do you want to pay with your balance? Reply 'yes' or 'no'.")
+
+    elif state['step'] == 'pay_method_join':
+        answer = msg.text.strip().lower()
+        mid = state['match_id']
+        cur.execute("SELECT stake FROM matches WHERE match_id=?", (mid,))
+        result = cur.fetchone()
+        if not result:
+            bot.send_message(uid, "❌ Match not found.")
+            states.pop(uid, None)
+            return
+        stake = result[0]
+        
+        if answer == 'yes':
+            bal = get_balance(uid)
+            if bal < stake:
+                bot.send_message(uid, f"❌ Your balance ({bal:.4f} SOL) is insufficient.")
+                return
+            cur.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (stake, uid))
+            cur.execute("UPDATE matches SET paid2=1 WHERE match_id=?", (mid,))
+            db.commit()
+            bot.send_message(uid, f"✅ You paid with your balance. Checking if both players have paid...")
+            
+            # Check if both players have paid
+            cur.execute("SELECT p1, p2, paid1, paid2 FROM matches WHERE match_id=?", (mid,))
+            match_data = cur.fetchone()
+            if match_data:
+                p1, p2, paid1, paid2 = match_data
+                if paid1 and paid2:
+                    bot.send_message(p1, "✅ Both players have paid. The match can start now!")
+                    bot.send_message(p2, "✅ Both players have paid. The match can start now!")
+                    handle_result_button(p1, mid)
+                    handle_result_button(p2, mid)
+                    logging.info("Result buttons sent for match %s", mid)
+                    
+        elif answer == 'no':
+            bot.send_message(uid, f"✅ Please send {stake} SOL to:\n<code>{BOT_WALLET}</code>")
+        else:
+            bot.send_message(uid, "❌ Please reply with 'yes' or 'no'.")
+            return
+        states.pop(uid)
+
+    elif state['step'] == 'withdraw':
+        try:
+            amount = float(msg.text.strip())
+            if amount <= 0:
+                bot.send_message(uid, "❌ Amount must be greater than 0.")
+                return
+            bal = get_balance(uid)
+            if amount > bal:
+                bot.send_message(uid, f"❌ Insufficient balance. Your balance: {bal:.4f} SOL")
+                return
+            cur.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (amount, uid))
+            db.commit()
+            bot.send_message(uid, f"✅ Withdrawal request for {amount:.4f} SOL is being processed (1–2 hours).")
+            
+            # Notify admins
+            withdrawal_msg = f"💸 WITHDRAWAL REQUEST\nUser: @{get_username(uid)}\nAmount: {amount:.4f} SOL\nUser ID: {uid}"
+            try:
+                bot.send_message(ADMIN_ID, withdrawal_msg)
+            except:
+                pass
+            try:
+                bot.send_message(ADMIN_ID_2, withdrawal_msg)
+            except:
+                pass
+            states.pop(uid)
+        except:
+            bot.send_message(uid, "❌ Invalid amount. Please enter a valid number.")
+
+    elif state['step'] == 'deposit_wallet':
+        wallet = msg.text.strip()
+        if len(wallet) < 20:  # Basic wallet validation
+            bot.send_message(uid, "❌ Invalid wallet address. Please provide a valid Solana wallet address.")
+            return
+            
+        cur.execute("UPDATE users SET wallet=? WHERE user_id=?", (wallet, uid))
+        db.commit()
+        user_info = get_user_info_text(uid)
+        bot.send_message(uid, user_info + f"✅ Wallet saved.\nNow send SOL to:\n<code>{BOT_WALLET}</code>")
+        states.pop(uid)
+
 def get_tx_details(sig):
+    """
+    Robust TX parsing:
+    - Nutzt preBalances/postBalances um tatsächliche SOL-Veränderung an BOT_WALLET zu ermitteln
+    - Liefert {'from': sender_pubkey, 'amount': sol_amount} oder None
+    """
     try:
         r = requests.post(RPC_URL, json={
             "jsonrpc": "2.0", "id": 1, "method": "getTransaction",
             "params": [sig, {"encoding": "jsonParsed", "commitment": "confirmed"}]
         }, timeout=10).json()
+        
         res = r.get('result')
-        if not res or res.get('meta', {}).get('err'):
+        if not res:
+            logging.debug("getTransaction returned no result for %s", sig)
             return None
+
+        meta = res.get('meta', {})
+        if meta.get('err'):
+            logging.debug("Transaction %s failed: %s", sig, meta.get('err'))
+            return None
+            
         txmsg = res['transaction']['message']
-        account_keys = [k['pubkey'] if isinstance(k, dict) else k for k in txmsg.get('accountKeys', [])]
-        pre = res['meta'].get('preBalances')
-        post = res['meta'].get('postBalances')
-        if not pre or not post:
+        account_keys = txmsg.get('accountKeys') or txmsg.get('accountKeys', [])
+        
+        # Normalize keys: can be dicts or strings
+        keys = []
+        for k in account_keys:
+            if isinstance(k, dict):
+                keys.append(k.get('pubkey'))
+            else:
+                keys.append(k)
+
+        pre = meta.get('preBalances')
+        post = meta.get('postBalances')
+        if pre is None or post is None:
+            logging.debug("No pre/post balances for %s", sig)
             return None
+
         try:
-            bot_index = account_keys.index(BOT_WALLET)
+            bot_index = keys.index(BOT_WALLET)
         except ValueError:
+            # our BOT_WALLET not involved in balances -> ignore
             return None
+
         delta = post[bot_index] - pre[bot_index]
         if delta <= 0:
+            # kein Netto-Eingang
             return None
-        amount = delta / 1e9
+
+        amount = delta / 1e9  # lamports -> SOL
+
+        # Try to find which account(s) decreased accordingly (sender)
         sender = None
         for i, (p, po) in enumerate(zip(pre, post)):
-            if p - po >= delta - 1000:
-                sender = account_keys[i]
+            if p - po >= delta - 1000:  # 1000 lamports tolerance (fee rounding)
+                sender = keys[i]
                 break
+
+        # Fallback: inspect parsed instructions
+        if not sender:
+            for inst in txmsg.get('instructions', []):
+                parsed = inst.get('parsed') if isinstance(inst, dict) else None
+                if parsed and isinstance(parsed, dict):
+                    info = parsed.get('info', {})
+                    # Common keys: 'source', 'from'
+                    if info.get('source'):
+                        sender = info.get('source')
+                        break
+                    if info.get('from'):
+                        sender = info.get('from')
+                        break
+
+        logging.info("TX %s -> from %s amount=%.9f SOL (lamports delta=%d)", sig, sender, amount, delta)
         return {"from": sender, "amount": amount}
-    except:
+    except Exception as e:
+        logging.exception("get_tx_details error for %s: %s", sig, e)
         return None
 
 def check_payments():
     while True:
         try:
-            r = requests.post(RPC_URL, json={
-                "jsonrpc": "2.0", "id": 1, "method": "getSignaturesForAddress",
-                "params": [BOT_WALLET, {"limit": 25}]
-            }, timeout=10).json()
-            results = r.get('result') or []
-            for tx in results:
-                sig = tx.get('signature')
-                if not sig or sig in checked_signatures:
-                    continue
-                checked_signatures.add(sig)
-                txd = get_tx_details(sig)
-                if not txd:
-                    continue
-                sender = txd['from']
-                amount = txd['amount']
-                if not sender:
-                    continue
+            cur = db.cursor()
+            cur.execute("SELECT match_id, player1, player2, wallet1, wallet2, stake, paid1, paid2 FROM matches WHERE status='waiting'")
+            matches = cur.fetchall()
 
-                # Direktes Deposit
-                cur.execute("SELECT user_id FROM users WHERE wallet=?", (sender,))
-                u = cur.fetchone()
-                if u:
-                    add_balance(u[0], amount)
-                    bot.send_message(u[0], f"✅ Deposit detected: {amount:.4f} SOL")
-                    continue
+            for match in matches:
+                mid, p1, p2, w1, w2, stake, paid1, paid2 = match
+                transactions = get_solana_transactions(CENTRAL_WALLET)
 
-                # Match-Payments
-                cur.execute("SELECT match_id, p1, p2, wallet1, wallet2, paid1, paid2, stake FROM matches WHERE paid1=0 OR paid2=0")
-                for m in cur.fetchall():
-                    mid, p1, p2, w1, w2, pd1, pd2, stake = m
-                    w1 = (w1 or '').strip()
-                    w2 = (w2 or '').strip()
-                    updated = False
+                for tx in transactions:
+                    sender = tx["sender"]
+                    amount = tx["amount"]
 
-                    # Wallet-Autofix
-                    if not w1 and sender == get_user_wallet_from_db(p1):
-                        w1 = sender
+                    # 1️⃣ Falls Wallet in DB leer, aber Payment kommt → sofort speichern
+                    if sender and not w1 and sender != w2:
                         cur.execute("UPDATE matches SET wallet1=? WHERE match_id=?", (sender, mid))
                         cur.execute("UPDATE users SET wallet=? WHERE user_id=?", (sender, p1))
                         db.commit()
-                    if not w2 and sender == get_user_wallet_from_db(p2):
-                        w2 = sender
+                        w1 = sender
+                    if sender and not w2 and sender != w1:
                         cur.execute("UPDATE matches SET wallet2=? WHERE match_id=?", (sender, mid))
                         cur.execute("UPDATE users SET wallet=? WHERE user_id=?", (sender, p2))
                         db.commit()
+                        w2 = sender
 
-                    # Payment-Zuweisung
-                    if sender == w1 and not pd1 and amount >= stake - 1e-9:
+                    # 2️⃣ Payment-Flags setzen
+                    if sender == w1 and not paid1 and amount >= stake:
                         cur.execute("UPDATE matches SET paid1=1 WHERE match_id=?", (mid,))
                         db.commit()
-                        bot.send_message(p1, f"✅ Payment received ({amount:.4f} SOL). Waiting for opponent.")
-                        updated = True
-                    elif sender == w2 and not pd2 and amount >= stake - 1e-9:
+                        paid1 = 1
+                        bot.send_message(p1, f"✅ Payment received ({amount} SOL). Waiting for opponent.")
+                    elif sender == w2 and not paid2 and amount >= stake:
                         cur.execute("UPDATE matches SET paid2=1 WHERE match_id=?", (mid,))
                         db.commit()
-                        bot.send_message(p2, f"✅ Payment received ({amount:.4f} SOL). Waiting for opponent.")
-                        updated = True
+                        paid2 = 1
+                        bot.send_message(p2, f"✅ Payment received ({amount} SOL). Waiting for opponent.")
 
-                    # Wenn beide bezahlt haben → sofort Result-Buttons senden
-                    if updated:
-                        cur.execute("SELECT paid1, paid2 FROM matches WHERE match_id=?", (mid,))
-                        paid1, paid2 = cur.fetchone()
-                        if paid1 and paid2:
-                            bot.send_message(p1, "✅ Both players have paid. The match can start now!")
-                            bot.send_message(p2, "✅ Both players have paid. The match can start now!")
-                            handle_result_button(p1, mid)
-                            handle_result_button(p2, mid)
+                    # 3️⃣ Sofort prüfen → beide bezahlt?
+                    if paid1 and paid2:
+                        bot.send_message(p1, "✅ Both players have paid. The match can start now!")
+                        bot.send_message(p2, "✅ Both players have paid. The match can start now!")
+                        handle_result_button(p1, mid)
+                        handle_result_button(p2, mid)
+                        cur.execute("UPDATE matches SET status='playing' WHERE match_id=?", (mid,))
+                        db.commit()
 
         except Exception as e:
-            logging.exception("Payment check error: %s", e)
-        time.sleep(5)
+            print(f"Error in check_payments: {e}")
+
+        time.sleep(30)  # alle 10 Sekunden prüfen
 
 if __name__ == "__main__":
     logging.info("🤖 Versus Arena Bot starting...")
     threading.Thread(target=check_payments, daemon=True).start()
     bot.infinity_polling()
+
+
+
