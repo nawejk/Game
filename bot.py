@@ -17,11 +17,13 @@ RPC_URL = 'https://api.mainnet-beta.solana.com'
 # --- Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
-# --- DB Setup ---
+# ======================
+# DB Setup + Migration
+# ======================
 db = sqlite3.connect("gamebot.db", check_same_thread=False)
 cur = db.cursor()
 
-# Falls Tabellen noch nicht existieren -> anlegen
+# Tabellen (falls komplett neu)
 cur.execute('''CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     username TEXT,
@@ -39,14 +41,31 @@ cur.execute('''CREATE TABLE IF NOT EXISTS matches (
     wallet2 TEXT,
     paid1 INTEGER,
     paid2 INTEGER,
-    winner INTEGER DEFAULT NULL,
-    status TEXT DEFAULT 'waiting'
+    winner INTEGER DEFAULT NULL
+    -- 'status' wird ggf. unten via Migration ergänzt
 )''')
 db.commit()
 
-# HINWEIS: Für ein frisches Testing die DB löschen:
-# if os.path.exists("gamebot.db"): os.remove("gamebot.db")
+def column_exists(table, col):
+    c = db.cursor()
+    c.execute(f"PRAGMA table_info({table})")
+    return any(row[1] == col for row in c.fetchall())
 
+def ensure_schema():
+    c = db.cursor()
+    # matches.status nachrüsten, wenn fehlt
+    if not column_exists('matches', 'status'):
+        c.execute("ALTER TABLE matches ADD COLUMN status TEXT DEFAULT 'waiting'")
+        db.commit()
+        c.execute("UPDATE matches SET status='waiting' WHERE status IS NULL")
+        db.commit()
+    # (weitere Migrationen könnten hier ergänzt werden)
+
+ensure_schema()
+
+# ======================
+# Bot State
+# ======================
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
 
 states = {}
@@ -193,7 +212,6 @@ def handle_callback(call):
 
     elif data.startswith("dispute_"):
         bot.send_message(uid, "📨 The admin has been informed. Please send any evidence if necessary.")
-        # Notify admins
         mid = data.split("_", 1)[1]
         cur.execute("SELECT p1, p2, game, stake FROM matches WHERE match_id=?", (mid,))
         match_info = cur.fetchone()
@@ -338,7 +356,6 @@ def state_handler(msg):
             db.commit()
             bot.send_message(uid, f"✅ You paid with your balance. Checking if both players have paid...")
 
-            # Beide bezahlt?
             cur.execute("SELECT p1, p2, paid1, paid2 FROM matches WHERE match_id=?", (mid,))
             p1, p2, paid1, paid2 = cur.fetchone()
             if paid1 and paid2:
@@ -397,10 +414,8 @@ def state_handler(msg):
 def rpc(method, params):
     return requests.post(RPC_URL, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=15).json()
 
-def get_new_signatures_for_address(address, limit=25):
-    """
-    Holt neue Signaturen für BOT_WALLET. Vermeidet Duplikate via checked_signatures.
-    """
+def get_new_signatures_for_address(address, limit=50):
+    """Holt neue Signaturen für BOT_WALLET. Vermeidet Duplikate via checked_signatures."""
     try:
         res = rpc("getSignaturesForAddress", [address, {"limit": limit}])
         arr = res.get("result") or []
@@ -409,8 +424,7 @@ def get_new_signatures_for_address(address, limit=25):
             sig = item.get("signature")
             if sig and sig not in checked_signatures:
                 sigs.append(sig)
-        # Neueste zuerst verarbeiten: wir kehren um, damit älteste zuerst kommen
-        sigs.reverse()
+        sigs.reverse()  # älteste zuerst verarbeiten
         return sigs
     except Exception as e:
         logging.warning("getSignaturesForAddress error: %s", e)
@@ -433,13 +447,9 @@ def get_tx_details(sig):
 
         txmsg = res['transaction']['message']
         account_keys = txmsg.get('accountKeys') or []
-        # Normalisieren (dict oder string)
         keys = []
         for k in account_keys:
-            if isinstance(k, dict):
-                keys.append(k.get('pubkey'))
-            else:
-                keys.append(k)
+            keys.append(k.get('pubkey') if isinstance(k, dict) else k)
 
         pre = meta.get('preBalances')
         post = meta.get('postBalances')
@@ -471,11 +481,9 @@ def get_tx_details(sig):
                     parsed = inst.get('parsed') or {}
                     info = parsed.get('info') or {}
                     if 'source' in info:
-                        sender = info['source']
-                        break
+                        sender = info['source']; break
                     if 'from' in info:
-                        sender = info['from']
-                        break
+                        sender = info['from']; break
 
         logging.info("TX %s -> from %s amount=%.9f SOL (lamports delta=%d)", sig, sender, amount, delta)
         return {"from": sender, "amount": amount}
@@ -493,7 +501,6 @@ def mark_paid_if_match(sender_wallet, amount_sol):
     """
     assigned = False
 
-    # 1) Versuchen, Zahlung einem wartenden Match (status='waiting') zuzuordnen
     cur.execute("""SELECT match_id, p1, p2, wallet1, wallet2, stake, paid1, paid2
                    FROM matches
                    WHERE status='waiting'""")
@@ -501,7 +508,7 @@ def mark_paid_if_match(sender_wallet, amount_sol):
 
     for mid, p1, p2, w1, w2, stake, paid1, paid2 in rows:
         updated = False
-        # Falls wallet1/wallet2 noch leer, auto-assign anhand erster Zahlung
+        # Auto-assign Wallets, falls leer
         if not w1 and sender_wallet and sender_wallet != w2:
             cur.execute("UPDATE matches SET wallet1=? WHERE match_id=?", (sender_wallet, mid))
             cur.execute("UPDATE users SET wallet=? WHERE user_id=?", (sender_wallet, p1))
@@ -550,9 +557,7 @@ def mark_paid_if_match(sender_wallet, amount_sol):
     return assigned
 
 def credit_general_deposit(sender_wallet, amount_sol):
-    """
-    Allgemeine Einzahlung (außerhalb von Matches) -> direkt auf User-Balance gutschreiben.
-    """
+    """Einzahlung außerhalb eines Matches -> direkt auf User-Balance gutschreiben."""
     cur.execute("SELECT user_id FROM users WHERE wallet=?", (sender_wallet,))
     r = cur.fetchone()
     if r:
