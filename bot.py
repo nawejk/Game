@@ -6,9 +6,10 @@ import time
 import threading
 import requests
 
-BOT_TOKEN = '8447925570:AAG5LsRoHfs3UXTJSgRa2PMjcrR291iDqfo'
+BOT_TOKEN = '8113317405:AAERiOi3TM95xU87ys9xIV_L622MLo83t6Q'
 BOT_WALLET = 'CKZEpwiVqAHLiSbdc8Ebf8xaQ2fofgPCNmzi4cV32M1s'
 ADMIN_ID = 7919108078
+ADMIN_ID_2 = 7160368480
 RPC_URL = 'https://api.mainnet-beta.solana.com'
 
 # --- DB Setup ---
@@ -70,7 +71,7 @@ def get_user_info_text(uid):
 
 def main_menu(uid, call=None):
     user_info = get_user_info_text(uid)
-    menu_text = user_info + "🏠 Hauptmenü - Versus Arena"
+    menu_text = user_info + "🏠 Hauptmenü - Versus Arena\n🌐 <a href='https://versus-arena.com/'>versus-arena.com</a>"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🔴 🎮 Match starten", callback_data="start_match"),
@@ -79,9 +80,9 @@ def main_menu(uid, call=None):
         InlineKeyboardButton("🔵 📤 Auszahlung", callback_data="withdraw"),
     )
     if call:
-        bot.edit_message_text(menu_text, uid, call.message.message_id, reply_markup=markup)
+        bot.edit_message_text(menu_text, uid, call.message.message_id, reply_markup=markup, disable_web_page_preview=True)
     else:
-        bot.send_message(uid, menu_text, reply_markup=markup)
+        bot.send_message(uid, menu_text, reply_markup=markup, disable_web_page_preview=True)
 
 @bot.message_handler(commands=['start'])
 def start(msg):
@@ -299,7 +300,6 @@ def state_handler(msg):
         bot.send_message(uid, user_info + f"✅ Wallet gespeichert.\nSende jetzt SOL an:\n<code>{BOT_WALLET}</code>")
         states.pop(uid)
 
-
 # --- Solana-Zahlungserkennung ---
 def get_tx_details(sig):
     try:
@@ -354,9 +354,14 @@ def check_payments():
                     db.commit()
                     if updated:
                         cur.execute("SELECT paid1, paid2 FROM matches WHERE match_id=?", (mid,))
-                        if all(cur.fetchone()):
+                        paid1, paid2 = cur.fetchone()
+                        if paid1 and paid2:
+                            # Beide bezahlt — Ergebnis Buttons senden
                             handle_result_button(p1, mid)
                             handle_result_button(p2, mid)
+                            # Admins benachrichtigen
+                            bot.send_message(ADMIN_ID, f"✅ Beide Spieler haben für Match {mid} bezahlt.")
+                            bot.send_message(ADMIN_ID_2, f"✅ Beide Spieler haben für Match {mid} bezahlt.")
         except Exception as e:
             print("Fehler bei Zahlungserkennung:", e)
         time.sleep(5)
