@@ -13,6 +13,8 @@ BOT_WALLET = 'CKZEpwiVqAHLiSbdc8Ebf8xaQ2fofgPCNmzi4cV32M1s'
 ADMIN_ID = 7919108078
 ADMIN_ID_2 = 7160368480
 RPC_URL = 'https://api.mainnet-beta.solana.com'
+INVESTOR_GROUP_LINK = 'https://t.me/+dW-n4_Yw7_Q1OTFi'
+HELP_CONTACT = '@nadjad_crpt,@NkryptoN'
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
@@ -44,6 +46,17 @@ cur.execute('''CREATE TABLE IF NOT EXISTS matches (
     winner INTEGER DEFAULT NULL
     -- 'status' wird ggf. unten via Migration ergänzt
 )''')
+
+# NEW: Investments (whitelist)
+cur.execute('''CREATE TABLE IF NOT EXISTS investments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    amount REAL,
+    wallet TEXT,
+    paid INTEGER DEFAULT 0,
+    created_at INTEGER
+)''')
+
 db.commit()
 
 def column_exists(table, col):
@@ -75,6 +88,7 @@ games = ['FIFA', 'Fortnite', 'Call of Duty', 'Mario Kart']
 # -----------------------
 # Helferfunktionen (DB)
 # -----------------------
+
 def get_username(uid):
     cur.execute("SELECT username FROM users WHERE user_id=?", (uid,))
     r = cur.fetchone()
@@ -108,6 +122,9 @@ def main_menu(uid, call=None):
         InlineKeyboardButton("🔵 💰 Balance", callback_data="balance"),
         InlineKeyboardButton("🔴 📥 Deposit", callback_data="deposit"),
         InlineKeyboardButton("🔵 📤 Withdraw", callback_data="withdraw"),
+        # NEW: Whitelist + Help
+        InlineKeyboardButton("🟢 Join Whitelist Now", callback_data="whitelist"),
+        InlineKeyboardButton("🆘 Help / Questions", callback_data="help")
     )
     try:
         if call:
@@ -184,6 +201,52 @@ def handle_callback(call):
         bot.edit_message_text(user_info + "💸 Enter amount to withdraw:",
                               call.message.chat.id, call.message.message_id, reply_markup=markup)
 
+    # NEW: Whitelist flow entry
+    elif data == "whitelist":
+        user_info = get_user_info_text(uid)
+        text = (
+            user_info +
+            "<b>🟢 Versus Arena – Whitelist Access</b>\n\n"
+            "Get early access to buy the Versus Arena token before public launch.\n"
+            "• Minimum investment: <b>1 SOL</b>\n"
+            "• Investing now gives an approximate entry at a $20–25K market cap.\n"
+            "• Your funds support launch & liquidity.\n"
+            "• After payment is detected on-chain, you will be marked as <b>invested</b> and invited to the investor group.\n\n"
+        )
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton("🚀 Invest Now", callback_data="invest_now"),
+            InlineKeyboardButton("🏠 Back to Menu", callback_data="back_to_menu")
+        )
+        try:
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, disable_web_page_preview=False)
+        except Exception:
+            bot.send_message(uid, text, reply_markup=markup, disable_web_page_preview=False)
+
+    elif data == "invest_now":
+        states[uid] = {'step': 'invest_amount'}
+        user_info = get_user_info_text(uid)
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("❌ Cancel", callback_data="back_to_menu"))
+        bot.edit_message_text(user_info + "💵 Enter the amount to invest in SOL (min 1 SOL):",
+                              call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    # NEW: Help / Questions
+    elif data == "help":
+        user_info = get_user_info_text(uid)
+        text = (
+            user_info +
+            "<b>🆘 Help / Questions</b>\n\n"
+            f"If you need help or have any questions, please contact {HELP_CONTACT}.\n"
+            "We are happy to assist you."
+        )
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🏠 Back to Menu", callback_data="back_to_menu"))
+        try:
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+        except Exception:
+            bot.send_message(uid, text, reply_markup=markup)
+
     elif data == "back_to_menu":
         states.pop(uid, None)
         main_menu(uid, call)
@@ -229,6 +292,23 @@ def handle_callback(call):
                     bot.send_message(admin, dispute_msg)
                 except Exception:
                     pass
+
+    # NEW: Verify investment payment button
+    elif data.startswith("invest_check_"):
+        inv_id = int(data.split("_", 2)[2])
+        if verify_invest_payment_once(inv_id):
+            try:
+                # Success message sent inside verification, but reply anyway
+                bot.answer_callback_query(call.id, "Payment detected!")
+            except Exception:
+                pass
+        else:
+            markup = InlineKeyboardMarkup()
+            markup.add(
+                InlineKeyboardButton("🔁 Check Again", callback_data=f"invest_check_{inv_id}"),
+                InlineKeyboardButton("🏠 Back to Menu", callback_data="back_to_menu")
+            )
+            bot.send_message(uid, "⏳ Payment not detected yet. If you already sent SOL, it may take a short moment to confirm on-chain.", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.from_user.id in states)
 def state_handler(msg):
@@ -408,11 +488,58 @@ def state_handler(msg):
         bot.send_message(uid, user_info + f"✅ Wallet saved.\nNow send SOL to:\n<code>{BOT_WALLET}</code>")
         states.pop(uid)
 
+    # NEW: Investment flow states
+    elif state['step'] == 'invest_amount':
+        try:
+            amount = float(msg.text.strip())
+            if amount < 1:
+                bot.send_message(uid, "❌ Minimum investment is 1 SOL.")
+                return
+            state['amount'] = amount
+            state['step'] = 'invest_wallet'
+            user_info = get_user_info_text(uid)
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("❌ Cancel", callback_data="back_to_menu"))
+            bot.send_message(uid, user_info + "🔑 Please provide the Solana wallet you'll use to send the investment:", reply_markup=markup)
+        except:
+            bot.send_message(uid, "❌ Invalid amount. Please enter a valid number.")
+
+    elif state['step'] == 'invest_wallet':
+        wallet = msg.text.strip()
+        if len(wallet) < 20:
+            bot.send_message(uid, "❌ Invalid wallet address. Please provide a valid Solana wallet address.")
+            return
+        amount = state['amount']
+        # Save user wallet for convenience
+        cur.execute("UPDATE users SET wallet=? WHERE user_id=?", (wallet, uid))
+        # Create investment record
+        created_at = int(time.time())
+        cur.execute("INSERT INTO investments (user_id, amount, wallet, created_at) VALUES (?, ?, ?, ?)", (uid, amount, wallet, created_at))
+        inv_id = cur.lastrowid
+        db.commit()
+
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton("✅ I've paid – check now", callback_data=f"invest_check_{inv_id}"),
+            InlineKeyboardButton("🏠 Back to Menu", callback_data="back_to_menu")
+        )
+        text = (
+            f"🚀 <b>Investment started</b>\n\n"
+            f"Amount: <b>{amount:.4f} SOL</b>\n"
+            f"From wallet: <code>{wallet}</code>\n\n"
+            f"📥 Please send <b>{amount:.4f} SOL</b> to:\n<code>{BOT_WALLET}</code>\n\n"
+            "Once the transaction is confirmed on-chain, tap the button below to verify."
+        )
+        bot.send_message(uid, text, reply_markup=markup)
+        states.pop(uid)
+
 # -----------------------
 # Solana RPC Helpers
 # -----------------------
+
 def rpc(method, params):
     return requests.post(RPC_URL, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=15).json()
+
 
 def get_new_signatures_for_address(address, limit=50):
     """Holt neue Signaturen für BOT_WALLET. Vermeidet Duplikate via checked_signatures."""
@@ -430,10 +557,11 @@ def get_new_signatures_for_address(address, limit=50):
         logging.warning("getSignaturesForAddress error: %s", e)
         return []
 
+
 def get_tx_details(sig):
     """
     Ermittelt tatsächliche SOL-Zunahme auf BOT_WALLET.
-    Liefert {'from': sender_pubkey, 'amount': sol_amount} oder None.
+    Liefert {'from': sender_pubkey, 'amount': sol_amount, 'blockTime': block_time} oder None.
     """
     try:
         r = rpc("getTransaction", [sig, {"encoding": "jsonParsed", "commitment": "confirmed"}])
@@ -485,8 +613,9 @@ def get_tx_details(sig):
                     if 'from' in info:
                         sender = info['from']; break
 
-        logging.info("TX %s -> from %s amount=%.9f SOL (lamports delta=%d)", sig, sender, amount, delta)
-        return {"from": sender, "amount": amount}
+        block_time = res.get('blockTime') or 0
+        logging.info("TX %s -> from %s amount=%.9f SOL (lamports delta=%d) blockTime=%s", sig, sender, amount, delta, block_time)
+        return {"from": sender, "amount": amount, "blockTime": block_time}
     except Exception as e:
         logging.warning("get_tx_details error for %s: %s", sig, e)
         return None
@@ -494,6 +623,7 @@ def get_tx_details(sig):
 # -----------------------
 # Payment Scanner Thread
 # -----------------------
+
 def mark_paid_if_match(sender_wallet, amount_sol):
     """
     Markiert Zahlung in offenen Matches und verschickt ggf. Start/Result-Buttons.
@@ -556,6 +686,37 @@ def mark_paid_if_match(sender_wallet, amount_sol):
 
     return assigned
 
+
+def mark_paid_if_invest(sender_wallet, amount_sol, block_time):
+    """Markiert Zahlung als Investment, wenn Wallet/Amount passt."""
+    assigned = False
+    cur.execute("SELECT id, user_id, amount, wallet, paid, created_at FROM investments WHERE paid=0 AND wallet=?", (sender_wallet,))
+    rows = cur.fetchall()
+    for inv_id, user_id, amount_req, wallet, paid, created_at in rows:
+        # Betrag reicht & TX ist nicht deutlich vor Start erstellt
+        if amount_sol + 1e-12 >= amount_req and (not block_time or block_time >= (created_at - 600)):
+            cur.execute("UPDATE investments SET paid=1 WHERE id=?", (inv_id,))
+            db.commit()
+            try:
+                bot.send_message(user_id, (
+                    "🎉 <b>Investment confirmed!</b>\n\n"
+                    f"Amount: <b>{amount_req:.4f} SOL</b>\n"
+                    f"Wallet: <code>{wallet}</code>\n\n"
+                    f"Welcome! Join the investor group: <a href='{INVESTOR_GROUP_LINK}'>Open Telegram</a>"
+                ))
+            except Exception:
+                pass
+            # Notify admins
+            info = f"✅ INVESTMENT\nUser: @{get_username(user_id)}\nAmount: {amount_req:.4f} SOL\nWallet: {wallet}\nID: {inv_id}"
+            for admin in (ADMIN_ID, ADMIN_ID_2):
+                try:
+                    bot.send_message(admin, info)
+                except Exception:
+                    pass
+            assigned = True
+    return assigned
+
+
 def credit_general_deposit(sender_wallet, amount_sol):
     """Einzahlung außerhalb eines Matches -> direkt auf User-Balance gutschreiben."""
     cur.execute("SELECT user_id FROM users WHERE wallet=?", (sender_wallet,))
@@ -568,6 +729,7 @@ def credit_general_deposit(sender_wallet, amount_sol):
         except Exception:
             pass
         logging.info("Credited deposit %.9f SOL to user %s (wallet %s)", amount_sol, uid, sender_wallet)
+
 
 def payment_scanner():
     logging.info("🔎 Payment scanner started (watching %s)...", BOT_WALLET)
@@ -583,20 +745,89 @@ def payment_scanner():
 
                 sender = details["from"]
                 amount = details["amount"]
+                block_time = details.get("blockTime", 0)
                 if not sender or amount <= 0:
                     continue
 
                 # 1) Erst versuchen, Zahlung einem offenen Match zuzuordnen
-                matched = mark_paid_if_match(sender, amount)
+                matched_match = mark_paid_if_match(sender, amount)
 
-                # 2) Falls kein Match betroffen -> allgemeine Einzahlung
-                if not matched:
+                # 2) Dann versuchen, Investment zuzuordnen
+                matched_invest = mark_paid_if_invest(sender, amount, block_time)
+
+                # 3) Falls kein Match/Investment betroffen -> allgemeine Einzahlung
+                if not (matched_match or matched_invest):
                     credit_general_deposit(sender, amount)
 
         except Exception as e:
             logging.warning("Scanner loop error: %s", e)
 
         time.sleep(8)
+
+# -----------------------
+# One-off verification for investments (on button press)
+# -----------------------
+
+def verify_invest_payment_once(inv_id):
+    cur.execute("SELECT user_id, amount, wallet, paid, created_at FROM investments WHERE id=?", (inv_id,))
+    row = cur.fetchone()
+    if not row:
+        return False
+    user_id, amount_req, wallet, paid, created_at = row
+    if paid:
+        # Already marked
+        try:
+            bot.send_message(user_id, (
+                "🎉 <b>Investment already confirmed</b>\n"
+                f"Amount: <b>{amount_req:.4f} SOL</b>\n"
+                f"Wallet: <code>{wallet}</code>\n"
+                f"Investor group: <a href='{INVESTOR_GROUP_LINK}'>Open Telegram</a>"
+            ))
+        except Exception:
+            pass
+        return True
+
+    # Pull recent signatures and try to match
+    try:
+        res = rpc("getSignaturesForAddress", [BOT_WALLET, {"limit": 100}])
+        arr = res.get('result') or []
+        for item in arr:
+            sig = item.get('signature')
+            if not sig:
+                continue
+            # Optional: time filter
+            btime = item.get('blockTime') or 0
+            if created_at and btime and btime < (created_at - 600):
+                continue
+            details = get_tx_details(sig)
+            if not details:
+                continue
+            if details.get('from') == wallet and details.get('amount', 0) + 1e-12 >= amount_req:
+                # mark paid
+                cur.execute("UPDATE investments SET paid=1 WHERE id=?", (inv_id,))
+                db.commit()
+                try:
+                    bot.send_message(user_id, (
+                        "🎉 <b>Investment confirmed!</b>\n\n"
+                        f"Amount: <b>{amount_req:.4f} SOL</b>\n"
+                        f"Wallet: <code>{wallet}</code>\n\n"
+                        f"Welcome! Join the investor group: <a href='{INVESTOR_GROUP_LINK}'>Open Telegram</a>"
+                    ))
+                except Exception:
+                    pass
+                # notify admins
+                info = f"✅ INVESTMENT\nUser: @{get_username(user_id)}\nAmount: {amount_req:.4f} SOL\nWallet: {wallet}\nID: {inv_id}"
+                for admin in (ADMIN_ID, ADMIN_ID_2):
+                    try:
+                        bot.send_message(admin, info)
+                    except Exception:
+                        pass
+                return True
+    except Exception as e:
+        logging.warning("verify_invest_payment_once error: %s", e)
+        return False
+
+    return False
 
 # -----------------------
 # Main
