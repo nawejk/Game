@@ -9,13 +9,13 @@ import threading
 import requests
 
 # --- CONFIG ---
-BOT_TOKEN = '8447925570:AAG5LsRoHfs3UXTJSgRa2PMjcrR291iDqfo'
+BOT_TOKEN = '8113317405:AAERiOi3TM95xU87ys9xIV_L622MLo83t6Q'
 BOT_WALLET = 'CKZEpwiVqAHLiSbdc8Ebf8xaQ2fofgPCNmzi4cV32M1s'
 ADMIN_ID = 7919108078
 ADMIN_ID_2 = 7160368480
 RPC_URL = 'https://api.mainnet-beta.solana.com'
 INVESTOR_GROUP_LINK = 'https://t.me/+dW-n4_Yw7_Q1OTFi'
-HELP_CONTACT = '@nadjadunterstrichcrpt'
+HELP_CONTACT = '@nadjad_crpt,@NkryptoN'
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
