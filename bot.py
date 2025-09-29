@@ -10,12 +10,12 @@ import requests
 
 # --- CONFIG ---
 BOT_TOKEN = '8113317405:AAERiOi3TM95xU87ys9xIV_L622MLo83t6Q'
-BOT_WALLET = 'G3KApJaLSDkqvxWKPo8d6HoJHrzkCAufiUzc8tLwUSFd'
+BOT_WALLET = '6buWY8pnMWc3HbzfXXqR11GsygqgsRbuWa1RhtmWgU3C'
 ADMIN_ID = 7919108078
-ADMIN_ID_2 = 7160368480
+ADMIN_ID_2 =7625705235
 RPC_URL = 'https://api.mainnet-beta.solana.com'
 INVESTOR_GROUP_LINK = 'https://t.me/+dW-n4_Yw7_Q1OTFi'
-HELP_CONTACT = '@nadjad_crpt,@NkryptoN'
+HELP_CONTACT = '@nadjad_crpt,'
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
