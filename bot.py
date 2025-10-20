@@ -108,7 +108,7 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
 
 states = {}
 checked_signatures = set()
-games = ['FIFA', 'Fortnite', 'Call of Duty', 'Mario Kart']
+games = ['Clash Royal', 'EA FC 26', 'Call of Duty Black OPs 6', 'Valorant', 'CSGO', 'Mario Kart', 'Battlefield 6']
 
 # -----------------------
 # DB helper funcs
