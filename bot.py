@@ -10,7 +10,7 @@ import requests
 
 # --- CONFIG ---
 BOT_TOKEN = '8113317405:AAERiOi3TM95xU87ys9xIV_L622MLo83t6Q'
-BOT_WALLET = '6buWY8pnMWc3HbzfXXqR11GsygqgsRbuWa1RhtmWgU3C'
+BOT_WALLET = '4uwJAkgxmMWSVxfQJPYYouxubu7sWVNzGQFeJsuwhN4K'
 ADMIN_ID = 7919108078
 ADMIN_ID_2 =7625705235
 RPC_URL = 'https://api.mainnet-beta.solana.com'
